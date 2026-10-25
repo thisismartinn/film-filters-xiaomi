@@ -1,6 +1,6 @@
 # Film Filters for Xiaomi Camera
 
-An LSPosed/Vector module (libxposed API 101-102) that adds film filters to the Xiaomi Camera filter panel on the Xiaomi 17 Ultra.
+An LSPosed/Vector module (libxposed API 101-102) that brings back the film filters from old Xiaomi Camera to the new Xiaomi Camera v6 filter panel.
 
 ## What it does
 
@@ -15,7 +15,7 @@ Adds film filters that the camera's current filter list leaves out. In the stand
 
 KP160 is already in the standard panel as "Monsoon", so the module leaves it alone there; the Leica UI list does not have it, so the module adds it. The LUTs for all five are already part of the camera app; the module only makes them appear in the list.
 
-Status, for camera **6.7.000280.0** (from HyperOS 4.0.5.0) only:
+Status, for camera **6.7.000280.0** (from HyperOS 4.0.5.0 on Xiaomi 17 Ultra) only:
 
 - Standard UI: works.
 - Leica UI ("Looks" panel): works.
