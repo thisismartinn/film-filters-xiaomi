@@ -1,79 +1,72 @@
-# HyperOS Camera Test
+# Film Filters for Xiaomi Camera
 
-Builds of the Xiaomi HyperOS camera app (`com.android.camera`), shared for side-by-side testing on HyperOS devices, plus [`film-filters-module/`](film-filters-module/), an Xposed module that adds film filters to the camera on a Xiaomi 17 Ultra.
+An LSPosed/Vector module (libxposed API 101-102) that adds film filters to the Xiaomi Camera filter panel on the Xiaomi 17 Ultra.
 
-## Downloads
+## What it does
 
-The APKs are attached to the [`camera-test` release](https://github.com/thisismartinn/hyperos-camera-test/releases/tag/camera-test) ("v5 & v6 apks").
+Adds four film filters that the camera's current filter list leaves out:
 
-| Label | Version | File | Size |
-| ----- | ------- | ---- | ---- |
-| v5 | 5.3.000460.0 | `com.android.camera_5.3.000460.0.apk` | ~165 MB |
-| v6 | 6.4.000530.0 | `com.android.camera_6.4.000530.0.apk` | ~195 MB |
-| v6 (17 Ultra) | 6.3.007010.0 | `com.android.camera_6.3.007010.0.apk` | ~195 MB |
-| v6 (installed on the Xiaomi 17 Ultra Leica edition) | 6.7.000280.0 | `MiuiCamera_running.apk` | ~191 MB |
+| Filter | Shown in the panel as |
+| ------ | --------------------- |
+| R600 | R600 |
+| P100F | P100F |
+| F-50 | Reversal |
+| KC64 | Orchid |
 
-`filters_v1.0.8.apk` in the same release is a third-party app that bundles LUT filters from several phone makers; it was used as a reference and is not part of the camera.
-
-## Installation
-
-1. Download the APK you want to test from the release page.
-2. Copy it to your device, or install over USB with ADB:
-
-   ```bash
-   adb install -r com.android.camera_5.3.000460.0.apk
-   ```
-
-   Use `-r` to replace an existing install. Downgrading from v6 to v5 may require uninstalling updates first:
-
-   ```bash
-   adb shell pm uninstall -k --user 0 com.android.camera
-   ```
-
-   Run that uninstall command with care: it removes the camera app for the current user until you reinstall an APK.
-
-3. Open the camera app and grant camera, microphone and storage permissions.
-
-## What to test
-
-- App launches and shows the live preview
-- Photo capture and saving to the gallery
-- Video recording
-- Front and rear camera switching
-- Flash, HDR and zoom controls
-- Differences in UI and behavior between v5 and v6
-
-## Test notes
-
-Add your results here.
-
-| Device | HyperOS version | App version | Result | Notes |
-| ------ | --------------- | ----------- | ------ | ----- |
-|        |                 |             |        |       |
-
-## Film Filters module
-
-[`film-filters-module/`](film-filters-module/) is an LSPosed/Vector module (libxposed API 101-102) that adds the old v5 film filters R600, P100F, F-50 (shown as "Reversal") and KC64 (shown as "Orchid") to the camera's filter panel on the Xiaomi 17 Ultra. KP160 is already in the panel as "Monsoon". The LUTs for all five are already inside the v5 and v6 APKs and are byte-identical between them.
+KP160 is already in the panel as "Monsoon", so the module leaves it alone. The LUTs for all five are already part of the camera app; the module only makes them appear in the list.
 
 Status, for camera **6.7.000280.0** only:
 
-- Standard UI: works. Set `camera.debug.theme_customize.disabled=true` (`su -c "setprop camera.debug.theme_customize.disabled true"`, resets on reboot) to turn the Leica UI off.
-- Leica UI ("Looks" panel): experimental and not yet confirmed.
+- Standard UI: works.
+- Leica UI ("Looks" panel): experimental, not yet confirmed.
 
-How it works:
+## How it works
 
-- The camera builds its photo filter list in `Ii.i0.d()`. The module appends the four missing items to that list.
-- The panel merges that list with the cloud filter list and drops local filters the cloud list does not name. The module makes `com.android.camera.fragment.m0.ut()` return `false` to skip the merge.
-- The Leica UI builds its own list in `E9.h.c()`. The module appends the same items there.
+1. **Add the items.** The camera builds its photo filter list in `Ii.i0.d()`. The module hooks that method and appends the four missing items, using the camera's own names and thumbnails.
+2. **Skip the cloud merge.** The filter panel merges the local list with the cloud filter list and drops any local filter the cloud list does not name. The module makes `com.android.camera.fragment.m0.ut()` return `false`, so the panel uses the local list as it is.
+3. **Leica UI.** The Leica UI builds its own "Looks" list in `E9.h.c()`. The module appends the same items there and fills the extra fields that panel reads with placeholders.
 
-The class names come from the obfuscated 6.7 build, so a camera update will probably need them looked up again. Logs go to logcat under the tag `FilmFilters`, not to the manager's module log:
+The class names come from the obfuscated 6.7 build, so a camera update will probably need them looked up again. When a hook can't be installed the module logs a warning and leaves the camera unchanged.
+
+## Use
+
+1. Install the module and enable it in LSPosed or Vector. Set its scope to **Camera** only.
+2. Force-stop Camera and open it again.
+3. For the standard UI on a phone that uses the Leica UI, turn the Leica theme off. This resets on reboot:
+
+   ```bash
+   su -c "setprop camera.debug.theme_customize.disabled true"
+   ```
+
+   Set it back to `false` and force-stop Camera to return to the Leica UI.
+
+If the camera misbehaves, disable the module and force-stop Camera to restore the stock behaviour. Nothing on the system partition is changed.
+
+## Logs
+
+The module logs to logcat under the tag `FilmFilters`, not to the manager's module log:
 
 ```bash
 su -c "logcat -d | grep FilmFilters"
 ```
 
-See [`film-filters-module/README.md`](film-filters-module/README.md) for the hook table and build steps. The module APKs are not committed; build with `./gradlew assembleRelease`.
+Useful lines:
+
+- `hooked Ii.i0.d`, `hooked ...m0.ut`: the hooks are installed.
+- `filter list: N items, added [...]`: the items were added.
+- `stored list` and `restoreItems`: the list size and filter ordinals at each stage (81 to 84 are the added filters).
+- `cannot hook ...`: the camera build differs from 6.7.000280.0.
+
+## Build
+
+`film-filters-module/` is a Gradle project. It needs the Android SDK (compileSdk 37, build-tools 37.0.0); put `sdk.dir=...` in `local.properties`, then:
+
+```bash
+./gradlew assembleRelease
+```
+
+The release build is signed with the debug key. See [`film-filters-module/README.md`](film-filters-module/README.md) for the hook table.
 
 ## Disclaimer
 
-These are third-party app packages from a stock system app. They are provided for personal testing only, and may not run on every device or ROM. Install at your own risk.
+An unofficial community module, not affiliated with Xiaomi. It hooks internal camera code and is provided as is, for personal use. Use it at your own risk.
