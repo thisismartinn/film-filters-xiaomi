@@ -15,10 +15,22 @@ Adds four film filters that the camera's current filter list leaves out:
 
 KP160 is already in the panel as "Monsoon", so the module leaves it alone. The LUTs for all five are already part of the camera app; the module only makes them appear in the list.
 
-Status, for camera **6.7.000280.0** only:
+Status, for camera **6.7.000280.0** (from HyperOS 4.0.5.0) only:
 
 - Standard UI: works.
 - Leica UI ("Looks" panel): experimental, not yet confirmed.
+
+## Camera versions
+
+The film filters come from older camera builds, and their code is still present in the build the module targets.
+
+| Camera version | From | Notes |
+| -------------- | ---- | ----- |
+| 5.3.000460.0 | HyperOS 2 | Has the film filters in its photo filter list. |
+| 6.3.007010.0 | HyperOS 3 | Same filter code; class names are not obfuscated. |
+| 6.7.000280.0 | HyperOS 4.0.5.0 | The build the module targets; class names are obfuscated. |
+
+The filter LUTs are byte-identical across these builds.
 
 ## How it works
 
