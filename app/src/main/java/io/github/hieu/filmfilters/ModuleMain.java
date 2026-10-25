@@ -1,11 +1,23 @@
 package io.github.hieu.filmfilters;
 
+import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.BitmapFactory;
+import android.graphics.RectF;
+import android.graphics.drawable.BitmapDrawable;
+import android.util.Base64;
 import android.util.Log;
+import android.widget.ImageView;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -30,8 +42,8 @@ public class ModuleMain extends XposedModule {
     // Leica UI: E9.h.c() builds the "Looks" list (back camera) from a fixed table.
     private static final String LOOKS_CLASS = "E9.h";
     private static final String LOOKS_METHOD = "c";
-    private static final String DRAWABLE_IDS = "com.android.camera.R$drawable";
-    private static final String LOOKS_NAME_ICON = "ic_vector_lc_looks_filter_name_icon_standard";
+    // ic_vector_lc_looks_filter_name_icon_standard in 6.7.000280.0 (no R classes at runtime).
+    private static final int LOOKS_NAME_ICON = 0x7f0808f5;
 
     // ordinal = position of the filter in the camera's filter enum (p3.d), order = sort slot,
     // cloudId = the id the camera's own item builder gives the same filter.
@@ -46,7 +58,29 @@ public class ModuleMain extends XposedModule {
             new Film(84, "KC64", "color_effect_entry_hanjiao", "color_effect_image_c_64", 17, 38),
     };
 
+    // The Leica Looks list names the filters by their film codes, and does not list KP160.
+    private static final Film[] LOOKS_FILMS = {
+            new Film(81, "R600", "color_effect_entry_r_600", "color_effect_image_r_600", 14, 56),
+            new Film(82, "P100F", "color_effect_entry_p_100f", "color_effect_image_p_100f", 15, 57),
+            new Film(83, "F-50", "color_effect_entry_f_50", "color_effect_image_f_50", 16, 46),
+            new Film(84, "KC64", "color_effect_entry_kc_64", "color_effect_image_c_64", 17, 38),
+            new Film(87, "KP160", "color_effect_entry_kp_160", "color_effect_image_p_160nc", 18, 58),
+    };
+
+    // The Looks list draws a small image of each look's name under its thumbnail. There is no
+    // such image for the film filters, so the name icon is a made-up resource id (this base plus
+    // the filter ordinal) that ImageView.setImageResource turns into the film's name as text.
+    private static final int NAME_ICON_BASE = 0x7e000000;
+    // Same coordinate system as the camera's own name icons (36 dp square, "LEICA" line 10.65 dp
+    // tall), so the label is drawn at the same size wherever the icon is used.
+    private static final float LABEL_SIZE_DP = 36f;
+    private static final float LABEL_CAP_DP = 10.65f;   // letter height of the native "LEICA" line
+    private static final float LABEL_GAP_DP = 0.36f;    // gap between letters, close to native
+    private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
+    private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
+
     private volatile boolean hooked;
+    private volatile boolean nameIconHooked;
 
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
@@ -79,12 +113,13 @@ public class ModuleMain extends XposedModule {
 
             hook(method).intercept(chain -> {
                 Object result = chain.proceed();
-                addFilms(result, create, ordinalField, cloudField, strings, images);
+                addFilms(result, FILMS, create, ordinalField, cloudField, strings, images);
                 return result;
             });
             hooked = true;
             log(Log.INFO, TAG, stage + ": hooked " + LIST_CLASS + "." + LIST_METHOD);
             installPanelHook(loader);
+            installNameIconHook();
             installLooksHook(loader, item, create, ordinalField, cloudField, strings, images);
             installDiagnostics(loader, ordinalField);
         } catch (Throwable t) {
@@ -111,6 +146,92 @@ public class ModuleMain extends XposedModule {
         }
     }
 
+    private void installNameIconHook() {
+        try {
+            var method = ImageView.class.getDeclaredMethod("setImageResource", int.class);
+            hook(method).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) != NAME_ICON_BASE) {
+                    return chain.proceed();
+                }
+                ImageView view = (ImageView) chain.getThisObject();
+                view.setImageDrawable(nameDrawable(view.getResources(), id & 0xFFFF));
+                return null;
+            });
+            nameIconHooked = true;
+            log(Log.INFO, TAG, "hooked ImageView.setImageResource (film name labels)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook ImageView.setImageResource: " + t);
+        }
+    }
+
+    // The film's name in the Leica label typeface, white on a transparent square the size of
+    // the name icon; the panel tints its name images. Every name uses the same letter height
+    // and weight, and its natural width (the longest, P100F, just fits).
+    private static BitmapDrawable nameDrawable(Resources resources, int ordinal) {
+        String label = "";
+        for (Film film : LOOKS_FILMS) {
+            if (film.ordinal() == ordinal) {
+                label = film.label();
+            }
+        }
+        float density = resources.getDisplayMetrics().density;
+        int size = Math.round(LABEL_SIZE_DP * density);
+        float cap = LeicaFont.CAP_HEIGHT;
+        float scale = LABEL_CAP_DP * density / cap;
+        float gap = LABEL_GAP_DP * density;
+        float hyphen = HYPHEN_LENGTH * cap * scale;
+
+        float total = gap * (label.length() - 1);
+        for (char c : label.toCharArray()) {
+            Bitmap glyph = c == '-' ? null : glyph(c);
+            total += c == '-' ? hyphen : glyph == null ? 0 : glyph.getWidth() * scale;
+        }
+
+        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        // Report the current screen density so the drawable is exactly size x size pixels
+        // (a vector of 36 dp is, whatever display-size setting is in use).
+        bitmap.setDensity(resources.getDisplayMetrics().densityDpi);
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        paint.setColor(Color.WHITE);
+        float x = (size - total) / 2f;
+        float top = (size - cap * scale) / 2f;
+        for (char c : label.toCharArray()) {
+            if (c == '-') {
+                float thick = LeicaFont.STROKE * scale;
+                float mid = top + cap * scale / 2f;
+                canvas.drawRoundRect(new RectF(x, mid - thick / 2f, x + hyphen, mid + thick / 2f),
+                        thick / 2f, thick / 2f, paint);
+                x += hyphen;
+            } else {
+                Bitmap glyph = glyph(c);
+                if (glyph != null) {
+                    float width = glyph.getWidth() * scale;
+                    canvas.drawBitmap(glyph, null, new RectF(x, top, x + width, top + cap * scale),
+                            paint);
+                    x += width;
+                }
+            }
+            x += gap;
+        }
+        return new BitmapDrawable(resources, bitmap);
+    }
+
+    private static synchronized Bitmap glyph(char c) {
+        Bitmap glyph = GLYPH_CACHE.get(c);
+        if (glyph == null) {
+            for (String[] entry : LeicaFont.GLYPHS) {
+                if (entry[0].charAt(0) == c) {
+                    byte[] data = Base64.decode(entry[1], Base64.DEFAULT);
+                    glyph = BitmapFactory.decodeByteArray(data, 0, data.length);
+                    GLYPH_CACHE.put(c, glyph);
+                }
+            }
+        }
+        return glyph;
+    }
+
     // The Leica UI lists "Looks" from a separate fixed table (E9.h.c). Add the same film items
     // there, filling in the extra fields that panel reads (name icon, sample images).
     private void installLooksHook(ClassLoader loader, Class<?> item, Constructor<?> create,
@@ -129,16 +250,16 @@ public class ModuleMain extends XposedModule {
             labelsField.setAccessible(true);
             Field descField = item.getDeclaredField("i");
             descField.setAccessible(true);
-            int nameIcon = Class.forName(DRAWABLE_IDS, false, loader).getField(LOOKS_NAME_ICON)
-                    .getInt(null);
+            int nameIcon = LOOKS_NAME_ICON;
 
             hook(method).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
-                    for (Object entry : addFilms(result, create, ordinalField, cloudField,
-                            strings, images)) {
+                    for (Object entry : addFilms(result, LOOKS_FILMS, create, ordinalField,
+                            cloudField, strings, images)) {
                         int icon = iconField.getInt(entry);
-                        nameIconField.setInt(entry, nameIcon);
+                        nameIconField.setInt(entry, nameIconHooked
+                                ? NAME_ICON_BASE | ordinalField.getInt(entry) : nameIcon);
                         samplesField.set(entry, new ArrayList<>(List.of(icon, icon, icon)));
                         labelsField.set(entry, new ArrayList<>(List.of(icon, icon, icon)));
                         descField.setInt(entry, 0);
@@ -210,8 +331,9 @@ public class ModuleMain extends XposedModule {
 
     // Appends any missing film items to the finished list. Leaves the list alone on any surprise.
     @SuppressWarnings("unchecked")
-    private List<Object> addFilms(Object result, Constructor<?> create, Field ordinalField,
-                                  Field cloudField, Class<?> strings, Class<?> images) {
+    private List<Object> addFilms(Object result, Film[] films, Constructor<?> create,
+                                  Field ordinalField, Field cloudField, Class<?> strings,
+                                  Class<?> images) {
         List<Object> created = new ArrayList<>();
         try {
             if (!(result instanceof List<?>)) {
@@ -223,7 +345,7 @@ public class ModuleMain extends XposedModule {
                 present.add(ordinalField.getInt(entry));
             }
             List<String> added = new ArrayList<>();
-            for (Film film : FILMS) {
+            for (Film film : films) {
                 if (present.contains(film.ordinal())) {
                     continue;
                 }

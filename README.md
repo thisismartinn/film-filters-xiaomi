@@ -4,7 +4,7 @@ An LSPosed/Vector module (libxposed API 101-102) that adds film filters to the X
 
 ## What it does
 
-Adds four film filters that the camera's current filter list leaves out:
+Adds film filters that the camera's current filter list leaves out. In the standard UI:
 
 | Filter | Shown in the panel as |
 | ------ | --------------------- |
@@ -13,12 +13,14 @@ Adds four film filters that the camera's current filter list leaves out:
 | F-50 | Reversal |
 | KC64 | Orchid |
 
-KP160 is already in the panel as "Monsoon", so the module leaves it alone. The LUTs for all five are already part of the camera app; the module only makes them appear in the list.
+KP160 is already in the standard panel as "Monsoon", so the module leaves it alone there; the Leica UI list does not have it, so the module adds it. The LUTs for all five are already part of the camera app; the module only makes them appear in the list.
 
 Status, for camera **6.7.000280.0** (from HyperOS 4.0.5.0) only:
 
 - Standard UI: works.
-- Leica UI ("Looks" panel): experimental, not yet confirmed.
+- Leica UI ("Looks" panel): works.
+
+The standard panel shows F-50 as "Reversal" and KC64 as "Orchid", the camera's own display names. The Leica UI lists all five filters (R600, P100F, F-50, KC64, KP160) by their film codes.
 
 ## Camera versions
 
@@ -36,7 +38,14 @@ The filter LUTs are byte-identical across these builds.
 
 1. **Add the items.** The camera builds its photo filter list in `Ii.i0.d()`. The module hooks that method and appends the four missing items, using the camera's own names and thumbnails.
 2. **Skip the cloud merge.** The filter panel merges the local list with the cloud filter list and drops any local filter the cloud list does not name. The module makes `com.android.camera.fragment.m0.ut()` return `false`, so the panel uses the local list as it is.
-3. **Leica UI.** The Leica UI builds its own "Looks" list in `E9.h.c()`. The module appends the same items there and fills the extra fields that panel reads with placeholders.
+3. **Leica UI.** The Leica UI builds its own "Looks" list in `E9.h.c()`. The module appends the five filters there too.
+
+| Target (6.7.000280.0) | Purpose |
+| --------------------- | ------- |
+| `Ii.i0.d()` | Photo filter list (standard UI): appends R600, P100F, F-50 and KC64. |
+| `com.android.camera.fragment.m0.ut()` | Filter panel: returns `false` so the list is not merged with the cloud list. |
+| `E9.h.c()` | Leica "Looks" list: appends R600, P100F, F-50, KC64 and KP160. |
+| `com.xiaomi.camera.effect.EffectController.q`, `s2.a.n`, `E9.h.c` | Log only: list size and filter ordinals at each stage. |
 
 The class names come from the obfuscated 6.7 build, so a camera update will probably need them looked up again. When a hook can't be installed the module logs a warning and leaves the camera unchanged.
 
@@ -71,13 +80,13 @@ Useful lines:
 
 ## Build
 
-`film-filters-module/` is a Gradle project. It needs the Android SDK (compileSdk 37, build-tools 37.0.0); put `sdk.dir=...` in `local.properties`, then:
+A Gradle project. It needs the Android SDK (compileSdk 37, build-tools 37.0.0); put `sdk.dir=...` in `local.properties`, then:
 
 ```bash
 ./gradlew assembleRelease
 ```
 
-The release build is signed with the debug key. See [`film-filters-module/README.md`](film-filters-module/README.md) for the hook table.
+The release build is signed with the debug key.
 
 ## Disclaimer
 
