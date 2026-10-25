@@ -1,5 +1,6 @@
 package io.github.hieu.filmfilters;
 
+import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -7,7 +8,12 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.BitmapFactory;
 import android.graphics.RectF;
-import android.graphics.drawable.BitmapDrawable;
+import android.graphics.ColorFilter;
+import android.graphics.PixelFormat;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.VectorDrawable;
 import android.util.Base64;
 import android.util.Log;
 import android.widget.ImageView;
@@ -74,10 +80,12 @@ public class ModuleMain extends XposedModule {
     // Same coordinate system as the camera's own name icons (36 dp square), so the label is drawn
     // at the same size wherever the icon is used. Letter height and stroke are those of the
     // native "LEICA" line as measured on screen (26 px tall, 4 px stroke, letters 3-4 px apart,
-    // at about 2.65 px per dp).
+    // 5 px between the two lines, at about 2.65 px per dp).
     private static final float LABEL_SIZE_DP = 36f;
-    private static final float LABEL_CAP_DP = 9.93f;
-    private static final float LABEL_GAP_DP = 1.32f;    // gap between letters, as native
+    private static final float LABEL_CAP_DP = 9.29f;
+    private static final float LABEL_GAP_DP = 1.05f;    // gap between letters, as native
+    private static final float LABEL_LINE_GAP_DP = 1.89f; // gap between the two lines, as native
+    private static final String LABEL_TOP_LINE = "FLM";
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
 
@@ -148,7 +156,28 @@ public class ModuleMain extends XposedModule {
         }
     }
 
+    // The name icon of a film item is a made-up resource id, so every way the camera loads it
+    // has to be answered here: Resources.getDrawable (Context.getDrawable and ImageView end up
+    // there) and, as a shortcut, ImageView.setImageResource. Without the first, the camera
+    // throws Resources.NotFoundException when it shows the filter's name in its top banner.
     private void installNameIconHook() {
+        try {
+            var method = Resources.class.getDeclaredMethod("getDrawable", int.class,
+                    Resources.Theme.class);
+            hook(method).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) != NAME_ICON_BASE) {
+                    return chain.proceed();
+                }
+                return nameDrawable((Resources) chain.getThisObject(), id & 0xFFFF);
+            });
+            nameIconHooked = true;
+            log(Log.INFO, TAG, "hooked Resources.getDrawable (film name labels)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook Resources.getDrawable, using the stock name icon: "
+                    + t);
+            return;
+        }
         try {
             var method = ImageView.class.getDeclaredMethod("setImageResource", int.class);
             hook(method).intercept(chain -> {
@@ -160,17 +189,90 @@ public class ModuleMain extends XposedModule {
                 view.setImageDrawable(nameDrawable(view.getResources(), id & 0xFFFF));
                 return null;
             });
-            nameIconHooked = true;
             log(Log.INFO, TAG, "hooked ImageView.setImageResource (film name labels)");
         } catch (Throwable t) {
             log(Log.WARN, TAG, "cannot hook ImageView.setImageResource: " + t);
         }
     }
 
-    // The film's name in the Leica label typeface, white on a transparent square the size of
-    // the name icon; the panel tints its name images. Every name uses the same letter height
-    // and weight, and its natural width (the longest, P100F, just fits).
-    private static BitmapDrawable nameDrawable(Resources resources, int ordinal) {
+    // The label image. It extends VectorDrawable because the camera only tints vector drawables
+    // (the top banner tints its name icon), so it has to be one for the label to be tinted too.
+    private static final class LabelDrawable extends VectorDrawable {
+        private final Bitmap bitmap;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private ColorStateList tint;
+        private PorterDuff.Mode tintMode = PorterDuff.Mode.SRC_IN;
+
+        LabelDrawable(Bitmap bitmap) {
+            this.bitmap = bitmap;
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            canvas.drawBitmap(bitmap, null, getBounds(), paint);
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return bitmap.getWidth();
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return bitmap.getHeight();
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+            invalidateSelf();
+        }
+
+        @Override
+        public int getAlpha() {
+            return paint.getAlpha();
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter filter) {
+            paint.setColorFilter(filter);
+            invalidateSelf();
+        }
+
+        @Override
+        public ColorFilter getColorFilter() {
+            return paint.getColorFilter();
+        }
+
+        @Override
+        public void setTintList(ColorStateList tint) {
+            this.tint = tint;
+            applyTint();
+        }
+
+        @Override
+        public void setTintMode(PorterDuff.Mode mode) {
+            tintMode = mode;
+            applyTint();
+        }
+
+        private void applyTint() {
+            paint.setColorFilter(tint == null ? null
+                    : new PorterDuffColorFilter(tint.getDefaultColor(), tintMode));
+            invalidateSelf();
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
+    }
+
+    // The film label in the Leica label typeface, white on a transparent square the size of the
+    // name icon; the panel tints its name images. Like the camera's own two-line labels, it has
+    // a short top word ("FLM", for film) above the film's name, both lines centred as a block.
+    // Every label uses the same letter height, weight and spacing, and natural widths.
+    private static Drawable nameDrawable(Resources resources, int ordinal) {
         String label = "";
         for (Film film : LOOKS_FILMS) {
             if (film.ordinal() == ordinal) {
@@ -181,14 +283,9 @@ public class ModuleMain extends XposedModule {
         int size = Math.round(LABEL_SIZE_DP * density);
         float cap = LeicaFont.CAP_HEIGHT;
         float scale = LABEL_CAP_DP * density / cap;
-        float gap = LABEL_GAP_DP * density;
-        float hyphen = HYPHEN_LENGTH * cap * scale;
-
-        float total = gap * (label.length() - 1);
-        for (char c : label.toCharArray()) {
-            Bitmap glyph = c == '-' ? null : glyph(c);
-            total += c == '-' ? hyphen : glyph == null ? 0 : glyph.getWidth() * scale;
-        }
+        float letterHeight = cap * scale;
+        float lineGap = LABEL_LINE_GAP_DP * density;
+        float top = (size - (2 * letterHeight + lineGap)) / 2f;
 
         Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         // Report the current screen density so the drawable is exactly size x size pixels
@@ -197,27 +294,42 @@ public class ModuleMain extends XposedModule {
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         paint.setColor(Color.WHITE);
-        float x = (size - total) / 2f;
-        float top = (size - cap * scale) / 2f;
-        for (char c : label.toCharArray()) {
+        drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, density);
+        drawLine(canvas, paint, label, size, top + letterHeight + lineGap, scale, density);
+        return new LabelDrawable(bitmap);
+    }
+
+    // One line of text, centred horizontally, with its top edge at y.
+    private static void drawLine(Canvas canvas, Paint paint, String text, int width, float y,
+                                 float scale, float density) {
+        float cap = LeicaFont.CAP_HEIGHT;
+        float gap = LABEL_GAP_DP * density;
+        float hyphen = HYPHEN_LENGTH * cap * scale;
+
+        float total = gap * (text.length() - 1);
+        for (char c : text.toCharArray()) {
+            Bitmap glyph = c == '-' ? null : glyph(c);
+            total += c == '-' ? hyphen : glyph == null ? 0 : glyph.getWidth() * scale;
+        }
+        float x = (width - total) / 2f;
+        for (char c : text.toCharArray()) {
             if (c == '-') {
                 float thick = LeicaFont.STROKE * scale;
-                float mid = top + cap * scale / 2f;
+                float mid = y + cap * scale / 2f;
                 canvas.drawRoundRect(new RectF(x, mid - thick / 2f, x + hyphen, mid + thick / 2f),
                         thick / 2f, thick / 2f, paint);
                 x += hyphen;
             } else {
                 Bitmap glyph = glyph(c);
                 if (glyph != null) {
-                    float width = glyph.getWidth() * scale;
-                    canvas.drawBitmap(glyph, null, new RectF(x, top, x + width, top + cap * scale),
-                            paint);
-                    x += width;
+                    float glyphWidth = glyph.getWidth() * scale;
+                    canvas.drawBitmap(glyph, null,
+                            new RectF(x, y, x + glyphWidth, y + cap * scale), paint);
+                    x += glyphWidth;
                 }
             }
             x += gap;
         }
-        return new BitmapDrawable(resources, bitmap);
     }
 
     private static synchronized Bitmap glyph(char c) {
