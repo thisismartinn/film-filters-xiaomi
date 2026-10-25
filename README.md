@@ -1,56 +1,52 @@
 # HyperOS Camera Test
 
-A small test project for trying out camera behavior on devices running Xiaomi HyperOS.
+Two builds of the Xiaomi HyperOS camera app (`com.android.camera`), shared for side-by-side testing on HyperOS devices.
 
-> **Note:** This is a placeholder README. Replace it with real details as the project grows.
+## Downloads
 
-## Features
+Both APKs are attached to the [`camera-test` release](https://github.com/thisismartinn/hyperos-camera-test/releases/tag/camera-test) ("v5 & v6 apks").
 
-- Open the device camera and show a live preview
-- Capture a photo
-- Switch between front and rear cameras
-- Log basic camera info (resolution, focus mode, flash support)
+| Label | Version | File | Size |
+| ----- | ------- | ---- | ---- |
+| v5 | 5.3.000460.0 | `com.android.camera_5.3.000460.0.apk` | ~165 MB |
+| v6 | 6.4.000530.0 | `com.android.camera_6.4.000530.0.apk` | ~195 MB |
 
-## Getting Started
+## Installation
 
-### Prerequisites
+1. Download the APK you want to test from the release page.
+2. Copy it to your device, or install over USB with ADB:
 
-- A device running HyperOS
-- Android Studio (or your preferred IDE)
-- Git
+   ```bash
+   adb install -r com.android.camera_5.3.000460.0.apk
+   ```
 
-### Installation
+   Use `-r` to replace an existing install. Downgrading from v6 to v5 may require uninstalling updates first:
 
-```bash
-git clone https://github.com/thisismartinn/hyperos-camera-test.git
-cd hyperos-camera-test
-```
+   ```bash
+   adb shell pm uninstall -k --user 0 com.android.camera
+   ```
 
-Open the project in your IDE, connect a device, and run the app.
+   Run that uninstall command with care: it removes the camera app for the current user until you reinstall an APK.
 
-## Usage
+3. Open the camera app and grant camera, microphone and storage permissions.
 
-1. Launch the app and grant camera permission.
-2. Tap the shutter button to take a photo.
-3. Tap the flip icon to switch cameras.
+## What to test
 
-## Project Structure
+- App launches and shows the live preview
+- Photo capture and saving to the gallery
+- Video recording
+- Front and rear camera switching
+- Flash, HDR and zoom controls
+- Differences in UI and behavior between v5 and v6
 
-```
-hyperos-camera-test/
-├── app/          # Application source
-├── docs/         # Notes and test results
-└── README.md
-```
+## Test notes
 
-## Known Issues
+Add your results here.
 
-- None yet. This is a dummy list.
+| Device | HyperOS version | App version | Result | Notes |
+| ------ | --------------- | ----------- | ------ | ----- |
+|        |                 |             |        |       |
 
-## Contributing
+## Disclaimer
 
-Issues and pull requests are welcome.
-
-## License
-
-TBD
+These are third-party app packages from a stock system app. They are provided for personal testing only, and may not run on every device or ROM. Install at your own risk.
