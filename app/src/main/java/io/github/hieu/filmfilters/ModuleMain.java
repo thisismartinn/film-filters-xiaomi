@@ -71,11 +71,13 @@ public class ModuleMain extends XposedModule {
     // such image for the film filters, so the name icon is a made-up resource id (this base plus
     // the filter ordinal) that ImageView.setImageResource turns into the film's name as text.
     private static final int NAME_ICON_BASE = 0x7e000000;
-    // Same coordinate system as the camera's own name icons (36 dp square, "LEICA" line 10.65 dp
-    // tall), so the label is drawn at the same size wherever the icon is used.
+    // Same coordinate system as the camera's own name icons (36 dp square), so the label is drawn
+    // at the same size wherever the icon is used. Letter height and stroke are those of the
+    // native "LEICA" line as measured on screen (26 px tall, 4 px stroke, letters 3-4 px apart,
+    // at about 2.65 px per dp).
     private static final float LABEL_SIZE_DP = 36f;
-    private static final float LABEL_CAP_DP = 10.65f;   // letter height of the native "LEICA" line
-    private static final float LABEL_GAP_DP = 0.36f;    // gap between letters, close to native
+    private static final float LABEL_CAP_DP = 9.93f;
+    private static final float LABEL_GAP_DP = 1.32f;    // gap between letters, as native
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
 
