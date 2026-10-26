@@ -108,7 +108,8 @@ public class ModuleMain extends XposedModule {
     private static final float LABEL_CAP_DP = 9.45f;
     private static final float LABEL_GAP_DP = 1.05f;    // gap between letters, close to native
     private static final float LABEL_LINE_GAP_DP = 2.25f; // gap between the two lines (31 px pitch at 2.65 px/dp), as native
-    private static final float LABEL_BLOCK_SHIFT_DP = 0.75f; // moves both lines down: the ring adds about 2 px above the letters
+    private static final float LABEL_BLOCK_SHIFT_DP = -0.4f; // moves both lines up, as native (outer edges incl. the ring)
+    private static final float LABEL_GLYPH_HEIGHT_DP = 9.1f; // letter height; the widths stay those of LABEL_CAP_DP
     // The native labels have a light gray outline around the letters (about 1.75 px at 2.65 px per
     // dp): white letters keep a gray rim on a bright background, and gray (unselected) letters get
     // that much heavier. The outline is not tinted, only the letters are.
@@ -365,10 +366,11 @@ public class ModuleMain extends XposedModule {
         }
         float density = resources.getDisplayMetrics().density;
         int size = Math.round(LABEL_SIZE_DP * density);
-        int letterHeight = Math.round(LABEL_CAP_DP * density);
+        int letterHeight = Math.round(LABEL_GLYPH_HEIGHT_DP * density);
+        int letterWidthBasis = Math.round(LABEL_CAP_DP * density);   // glyph widths, weight and spacing are those of this height
         int pitch = Math.round((LABEL_CAP_DP + LABEL_LINE_GAP_DP) * density);   // line 1 top to line 2 top
         int top = Math.round((size - (letterHeight + pitch)) / 2f + LABEL_BLOCK_SHIFT_DP * density);
-        float scale = letterHeight / (float) LeicaFont.CAP_HEIGHT;
+        float scale = letterWidthBasis / (float) LeicaFont.CAP_HEIGHT;
 
         // Report the current screen density so the drawables are exactly size x size pixels
         // (a vector of 36 dp is, whatever display-size setting is in use).
@@ -378,8 +380,8 @@ public class ModuleMain extends XposedModule {
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         paint.setColor(Color.WHITE);
-        drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, density, 0);
-        drawLine(canvas, paint, label, size, top + pitch, scale, density, 0);
+        drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, letterHeight, density, 0);
+        drawLine(canvas, paint, label, size, top + pitch, scale, letterHeight, density, 0);
 
         // The outline: the same letters spread outwards, in a fixed gray.
         Bitmap ring = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
@@ -389,8 +391,8 @@ public class ModuleMain extends XposedModule {
         ringPaint.setColor(LABEL_RING_COLOR);
         ringPaint.setColorFilter(new PorterDuffColorFilter(LABEL_RING_COLOR, PorterDuff.Mode.SRC_IN));
         float spread = LABEL_RING_DP * density;
-        drawLine(ringCanvas, ringPaint, LABEL_TOP_LINE, size, top, scale, density, spread);
-        drawLine(ringCanvas, ringPaint, label, size, top + pitch, scale, density, spread);
+        drawLine(ringCanvas, ringPaint, LABEL_TOP_LINE, size, top, scale, letterHeight, density, spread);
+        drawLine(ringCanvas, ringPaint, label, size, top + pitch, scale, letterHeight, density, spread);
         return new LabelDrawable(bitmap, ring);
     }
 
@@ -398,7 +400,7 @@ public class ModuleMain extends XposedModule {
     // is drawn again at points on circles of that radius around its place, which grows it
     // outwards by that much (the outline).
     private static void drawLine(Canvas canvas, Paint paint, String text, int width, float y,
-                                 float scale, float density, float spread) {
+                                 float scale, float height, float density, float spread) {
         float cap = LeicaFont.CAP_HEIGHT;
         float gap = LABEL_GAP_DP * density;
         float hyphen = HYPHEN_LENGTH * cap * scale;
@@ -412,7 +414,7 @@ public class ModuleMain extends XposedModule {
         for (char c : text.toCharArray()) {
             if (c == '-') {
                 float thick = LeicaFont.STROKE * scale;
-                float mid = y + cap * scale / 2f;
+                float mid = y + height / 2f;
                 float grown = thick / 2f + spread;
                 canvas.drawRoundRect(new RectF(x - spread, mid - grown, x + hyphen + spread,
                         mid + grown), grown, grown, paint);
@@ -421,7 +423,7 @@ public class ModuleMain extends XposedModule {
                 Bitmap glyph = glyph(c);
                 if (glyph != null) {
                     float glyphWidth = glyph.getWidth() * scale;
-                    drawSpread(canvas, glyph, x, y, glyphWidth, cap * scale, spread, paint);
+                    drawSpread(canvas, glyph, x, y, glyphWidth, height, spread, paint);
                     x += glyphWidth;
                 }
             }
