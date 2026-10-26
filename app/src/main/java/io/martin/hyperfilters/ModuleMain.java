@@ -106,7 +106,8 @@ public class ModuleMain extends XposedModule {
     // 5 px between the two lines, at about 2.65 px per dp).
     private static final float LABEL_SIZE_DP = 36f;
     private static final float LABEL_CAP_DP = 9.45f;
-    private static final float LABEL_GAP_DP = 1.05f;    // gap between letters, close to native
+    private static final float LABEL_GAP_DP = 1.05f;    // gap between the letters of the top line, as native
+    private static final float LABEL_NAME_GAP_DP = 1.25f; // same for the film code: its letters sat tighter than native
     private static final float LABEL_LINE_GAP_DP = 2.25f; // gap between the two lines (31 px pitch at 2.65 px/dp), as native
     private static final float LABEL_BLOCK_SHIFT_DP = -0.4f; // moves both lines up, as native (outer edges incl. the ring)
     private static final float LABEL_GLYPH_HEIGHT_DP = 9.1f; // letter height; the widths stay those of LABEL_CAP_DP
@@ -384,8 +385,8 @@ public class ModuleMain extends XposedModule {
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         paint.setColor(Color.WHITE);
-        drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, letterHeight, density, 0);
-        drawLine(canvas, paint, label, size, top + pitch, scale, letterHeight, density, 0);
+        drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, letterWidthBasis, LABEL_GAP_DP, density, 0);
+        drawLine(canvas, paint, label, size, top + pitch, scale, letterHeight, LABEL_NAME_GAP_DP, density, 0);
 
         // The outline: the same letters spread outwards, in a fixed gray.
         Bitmap ring = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
@@ -394,8 +395,8 @@ public class ModuleMain extends XposedModule {
         Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         ringPaint.setColorFilter(new PorterDuffColorFilter(Color.BLACK, PorterDuff.Mode.SRC_IN));
         float spread = LABEL_RING_DP * density;
-        drawLine(ringCanvas, ringPaint, LABEL_TOP_LINE, size, top, scale, letterHeight, density, spread);
-        drawLine(ringCanvas, ringPaint, label, size, top + pitch, scale, letterHeight, density, spread);
+        drawLine(ringCanvas, ringPaint, LABEL_TOP_LINE, size, top, scale, letterWidthBasis, LABEL_GAP_DP, density, spread);
+        drawLine(ringCanvas, ringPaint, label, size, top + pitch, scale, letterHeight, LABEL_NAME_GAP_DP, density, spread);
         return new LabelDrawable(bitmap, ring);
     }
 
@@ -403,16 +404,23 @@ public class ModuleMain extends XposedModule {
     // is drawn again at points on circles of that radius around its place, which grows it
     // outwards by that much (the outline).
     private static void drawLine(Canvas canvas, Paint paint, String text, int width, float y,
-                                 float scale, float height, float density, float spread) {
+                                 float scale, float height, float gapDp, float density,
+                                 float spread) {
         float cap = LeicaFont.CAP_HEIGHT;
-        float gap = LABEL_GAP_DP * density;
+        float gap = gapDp * density;
         float hyphen = HYPHEN_LENGTH * cap * scale;
 
-        float total = gap * (text.length() - 1);
+        float letters = 0;
         for (char c : text.toCharArray()) {
             Bitmap glyph = c == '-' ? null : glyph(c);
-            total += c == '-' ? hyphen : glyph == null ? 0 : glyph.getWidth() * scale;
+            letters += c == '-' ? hyphen : glyph == null ? 0 : glyph.getWidth() * scale;
         }
+        // Never wider than the label with its outline: tighten the gap when a text would not fit.
+        if (text.length() > 1) {
+            float room = width - 1 - 2 * LABEL_RING_DP * density;
+            gap = Math.min(gap, (room - letters) / (text.length() - 1));
+        }
+        float total = letters + gap * (text.length() - 1);
         float x = (width - total) / 2f;
         for (char c : text.toCharArray()) {
             if (c == '-') {
