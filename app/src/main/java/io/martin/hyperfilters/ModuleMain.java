@@ -114,7 +114,10 @@ public class ModuleMain extends XposedModule {
     // dp): white letters keep a gray rim on a bright background, and gray (unselected) letters get
     // that much heavier. The outline is not tinted, only the letters are.
     private static final float LABEL_RING_DP = 0.66f;
-    private static final int LABEL_RING_COLOR = 0xFFC1C1C1;
+    // The outline is translucent black (22%), not a fixed gray: over a near-white panel it comes
+    // out as the light gray of the native labels (#C1C1C1), and over a dark panel it is hardly
+    // visible, as on the native labels.
+    private static final int LABEL_RING_ALPHA = 56;
     private static final String LABEL_TOP_LINE = "FLM";
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
@@ -286,6 +289,7 @@ public class ModuleMain extends XposedModule {
         LabelDrawable(Bitmap bitmap, Bitmap ring) {
             this.bitmap = bitmap;
             this.ring = ring;
+            ringPaint.setAlpha(LABEL_RING_ALPHA);
         }
 
         @Override
@@ -307,7 +311,7 @@ public class ModuleMain extends XposedModule {
         @Override
         public void setAlpha(int alpha) {
             paint.setAlpha(alpha);
-            ringPaint.setAlpha(alpha);
+            ringPaint.setAlpha(alpha * LABEL_RING_ALPHA / 255);
             invalidateSelf();
         }
 
@@ -388,8 +392,7 @@ public class ModuleMain extends XposedModule {
         ring.setDensity(densityDpi);
         Canvas ringCanvas = new Canvas(ring);
         Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        ringPaint.setColor(LABEL_RING_COLOR);
-        ringPaint.setColorFilter(new PorterDuffColorFilter(LABEL_RING_COLOR, PorterDuff.Mode.SRC_IN));
+        ringPaint.setColorFilter(new PorterDuffColorFilter(Color.BLACK, PorterDuff.Mode.SRC_IN));
         float spread = LABEL_RING_DP * density;
         drawLine(ringCanvas, ringPaint, LABEL_TOP_LINE, size, top, scale, letterHeight, density, spread);
         drawLine(ringCanvas, ringPaint, label, size, top + pitch, scale, letterHeight, density, spread);
