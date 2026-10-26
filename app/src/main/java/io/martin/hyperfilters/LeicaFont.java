@@ -1,4 +1,4 @@
-package io.github.hieu.filmfilters;
+package io.martin.hyperfilters;
 
 /**
  * Glyphs of the Leica label typeface (rounded monoline caps and digits), cut from a reference

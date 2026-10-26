@@ -22,6 +22,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "film-filters-xiaomi"
+rootProject.name = "HyperFilmFilters"
 
 include(":app")

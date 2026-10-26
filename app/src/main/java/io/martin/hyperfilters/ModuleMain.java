@@ -1,5 +1,6 @@
-package io.github.hieu.filmfilters;
+package io.martin.hyperfilters;
 
+import android.app.Application;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
@@ -14,9 +15,12 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.VectorDrawable;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
 import android.widget.ImageView;
+import android.widget.Toast;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -26,28 +30,47 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedModule;
 
 public class ModuleMain extends XposedModule {
-    private static final String TAG = "FilmFilters";
+    private static final String TAG = "HyperFilmFilters";
     private static final String CAMERA_PACKAGE = "com.android.camera";
-
-    // Camera 6.7.000280.0 is obfuscated. Ii.i0.d() builds the photo filter list (category 10)
-    // as a list of j3.b items; the items below were left out for this device.
-    private static final String LIST_CLASS = "Ii.i0";
-    private static final String LIST_METHOD = "d";
-    private static final String ITEM_CLASS = "j3.b";
-    private static final String STRING_IDS = "Di.p";
-    private static final String IMAGE_IDS = "Di.n";
     private static final int PHOTO_CATEGORY = 10;
-    // The filter panel (FragmentFilter). Its ut() says whether to merge the list with the cloud
-    // filter list, which drops any local filter the cloud list does not name.
-    private static final String PANEL_CLASS = "com.android.camera.fragment.m0";
-    private static final String PANEL_METHOD = "ut";
-    // Leica UI: E9.h.c() builds the "Looks" list (back camera) from a fixed table.
-    private static final String LOOKS_CLASS = "E9.h";
-    private static final String LOOKS_METHOD = "c";
+
+    // Where the camera keeps its filter code. The camera is obfuscated, so the names change from
+    // build to build; a profile is one known layout. The module tries each profile in turn and
+    // uses the first whose classes, methods and fields all exist. When none fits, the module
+    // leaves the camera alone and tells the user.
+    private record Profile(
+            String name,
+            // Builds the photo filter list (category 10) as a list of items.
+            String listClass, String listMethod,
+            // The filter item and its fields: filter ordinal, cloud id, icon, name icon,
+            // sample images, sample labels, description.
+            String itemClass, String ordinalField, String cloudField, String iconField,
+            String nameIconField, String samplesField, String labelsField, String descField,
+            // The camera's resource id classes (strings, images). Optional: when missing the
+            // ids are looked up by name instead.
+            String stringIds, String imageIds,
+            // The filter panel. Its method says whether to merge the list with the cloud list,
+            // which drops any local filter the cloud list does not name.
+            String panelClass, String panelMethod,
+            // Leica UI: builds the "Looks" list (back camera) from a fixed table.
+            String looksClass, String looksMethod) {
+    }
+
+    private static final Profile[] PROFILES = {
+            // Camera 6.7.000280.0 (HyperOS 4.0.5.0).
+            new Profile("6.7", "Ii.i0", "d",
+                    "j3.b", "b", "l", "e", "d", "g", "h", "i",
+                    "Di.p", "Di.n",
+                    "com.android.camera.fragment.m0", "ut",
+                    "E9.h", "c"),
+    };
+
     // ic_vector_lc_looks_filter_name_icon_standard in 6.7.000280.0 (no R classes at runtime).
     private static final int LOOKS_NAME_ICON = 0x7f0808f5;
 
@@ -92,6 +115,14 @@ public class ModuleMain extends XposedModule {
 
     private volatile boolean hooked;
     private volatile boolean nameIconHooked;
+    // What did not work, shown to the user once per camera version (see scheduleNotice).
+    private final List<String> problems = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean noticeScheduled = new AtomicBoolean();
+
+    // What a profile resolved to on the running camera.
+    private record Resolved(Profile profile, Constructor<?> create, Field ordinal, Field cloud,
+                            Class<?> strings, Class<?> images) {
+    }
 
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
@@ -101,59 +132,99 @@ public class ModuleMain extends XposedModule {
     @Override
     public void onPackageReady(PackageReadyParam param) {
         install("onPackageReady", param.getPackageName(), param.getClassLoader());
+        if (CAMERA_PACKAGE.equals(param.getPackageName())) {
+            scheduleNotice();
+        }
     }
 
     private void install(String stage, String pkg, ClassLoader loader) {
         if (!CAMERA_PACKAGE.equals(pkg) || hooked || loader == null) {
             return;
         }
-        try {
-            var builder = Class.forName(LIST_CLASS, false, loader);
-            var method = builder.getDeclaredMethod(LIST_METHOD);
-
-            Class<?> item = Class.forName(ITEM_CLASS, false, loader);
-            Constructor<?> create = item.getDeclaredConstructor(int.class, int.class, int.class,
-                    int.class, int.class, int.class, String.class);
-            create.setAccessible(true);
-            Field ordinalField = item.getDeclaredField("b");
-            ordinalField.setAccessible(true);
-            Field cloudField = item.getDeclaredField("l");
-            cloudField.setAccessible(true);
-            Class<?> strings = Class.forName(STRING_IDS, false, loader);
-            Class<?> images = Class.forName(IMAGE_IDS, false, loader);
-
-            hook(method).intercept(chain -> {
-                Object result = chain.proceed();
-                addFilms(result, FILMS, create, ordinalField, cloudField, strings, images);
-                return result;
-            });
+        problems.clear();
+        for (Profile profile : PROFILES) {
+            Resolved resolved;
+            try {
+                resolved = resolve(profile, loader);
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, stage + ": camera layout " + profile.name()
+                        + " does not match: " + t);
+                continue;
+            }
+            try {
+                hook(listMethod(profile, loader)).intercept(chain -> {
+                    Object result = chain.proceed();
+                    addFilms(result, FILMS, resolved);
+                    return result;
+                });
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, stage + ": cannot hook " + profile.listClass() + "."
+                        + profile.listMethod() + ": " + t);
+                continue;
+            }
             hooked = true;
-            log(Log.INFO, TAG, stage + ": hooked " + LIST_CLASS + "." + LIST_METHOD);
-            installPanelHook(loader);
+            log(Log.INFO, TAG, stage + ": camera layout " + profile.name() + ", hooked "
+                    + profile.listClass() + "." + profile.listMethod());
+            installPanelHook(profile, loader);
             installNameIconHook();
-            installLooksHook(loader, item, create, ordinalField, cloudField, strings, images);
-            installDiagnostics(loader, ordinalField);
+            installLooksHook(profile, loader, resolved);
+            return;
+        }
+        log(Log.WARN, TAG, stage + ": the camera's filter code is not one this module knows "
+                + "(a different camera version?); the camera is left unchanged");
+        problems.add(MSG_UNSUPPORTED);
+    }
+
+    private static java.lang.reflect.Method listMethod(Profile profile, ClassLoader loader)
+            throws ReflectiveOperationException {
+        return Class.forName(profile.listClass(), false, loader)
+                .getDeclaredMethod(profile.listMethod());
+    }
+
+    // Looks up everything a profile names. Throws if any of it is missing.
+    private static Resolved resolve(Profile profile, ClassLoader loader)
+            throws ReflectiveOperationException {
+        listMethod(profile, loader);
+        Class<?> item = Class.forName(profile.itemClass(), false, loader);
+        Constructor<?> create = item.getDeclaredConstructor(int.class, int.class, int.class,
+                int.class, int.class, int.class, String.class);
+        create.setAccessible(true);
+        Field ordinal = field(item, profile.ordinalField());
+        Field cloud = field(item, profile.cloudField());
+        return new Resolved(profile, create, ordinal, cloud,
+                optionalClass(profile.stringIds(), loader), optionalClass(profile.imageIds(), loader));
+    }
+
+    private static Field field(Class<?> cls, String name) throws NoSuchFieldException {
+        Field field = cls.getDeclaredField(name);
+        field.setAccessible(true);
+        return field;
+    }
+
+    private static Class<?> optionalClass(String name, ClassLoader loader) {
+        try {
+            return Class.forName(name, false, loader);
         } catch (Throwable t) {
-            log(Log.WARN, TAG, stage + ": cannot hook " + LIST_CLASS + "." + LIST_METHOD
-                    + " (unsupported camera build?): " + t);
+            return null;
         }
     }
 
-    private void installPanelHook(ClassLoader loader) {
+    private void installPanelHook(Profile profile, ClassLoader loader) {
         try {
-            var panel = Class.forName(PANEL_CLASS, false, loader);
-            var method = panel.getDeclaredMethod(PANEL_METHOD);
+            var panel = Class.forName(profile.panelClass(), false, loader);
+            var method = panel.getDeclaredMethod(profile.panelMethod());
             if (method.getReturnType() != boolean.class) {
-                log(Log.WARN, TAG, PANEL_CLASS + "." + PANEL_METHOD + " does not return boolean");
-                return;
+                throw new NoSuchMethodException("does not return boolean");
             }
             hook(method).intercept(chain -> {
-                log(Log.INFO, TAG, PANEL_METHOD + " called, returning false (no cloud merge)");
+                log(Log.INFO, TAG, profile.panelMethod() + " called, returning false (no cloud merge)");
                 return Boolean.FALSE;
             });
-            log(Log.INFO, TAG, "hooked " + PANEL_CLASS + "." + PANEL_METHOD);
+            log(Log.INFO, TAG, "hooked " + profile.panelClass() + "." + profile.panelMethod());
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "cannot hook " + PANEL_CLASS + "." + PANEL_METHOD + ": " + t);
+            log(Log.WARN, TAG, "cannot hook " + profile.panelClass() + "." + profile.panelMethod()
+                    + ": " + t);
+            problems.add(MSG_PANEL);
         }
     }
 
@@ -348,34 +419,27 @@ public class ModuleMain extends XposedModule {
         return glyph;
     }
 
-    // The Leica UI lists "Looks" from a separate fixed table (E9.h.c). Add the same film items
-    // there, filling in the extra fields that panel reads (name icon, sample images).
-    private void installLooksHook(ClassLoader loader, Class<?> item, Constructor<?> create,
-                                  Field ordinalField, Field cloudField, Class<?> strings,
-                                  Class<?> images) {
+    // The Leica UI lists "Looks" from a separate fixed table. Add the same film items there,
+    // filling in the extra fields that panel reads (name icon, sample images).
+    private void installLooksHook(Profile profile, ClassLoader loader, Resolved resolved) {
         try {
-            var looks = Class.forName(LOOKS_CLASS, false, loader);
-            var method = looks.getDeclaredMethod(LOOKS_METHOD);
-            Field iconField = item.getDeclaredField("e");
-            iconField.setAccessible(true);
-            Field nameIconField = item.getDeclaredField("d");
-            nameIconField.setAccessible(true);
-            Field samplesField = item.getDeclaredField("g");
-            samplesField.setAccessible(true);
-            Field labelsField = item.getDeclaredField("h");
-            labelsField.setAccessible(true);
-            Field descField = item.getDeclaredField("i");
-            descField.setAccessible(true);
-            int nameIcon = LOOKS_NAME_ICON;
+            var looks = Class.forName(profile.looksClass(), false, loader);
+            var method = looks.getDeclaredMethod(profile.looksMethod());
+            Class<?> item = resolved.create().getDeclaringClass();
+            Field iconField = field(item, profile.iconField());
+            Field nameIconField = field(item, profile.nameIconField());
+            Field samplesField = field(item, profile.samplesField());
+            Field labelsField = field(item, profile.labelsField());
+            Field descField = field(item, profile.descField());
 
             hook(method).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
-                    for (Object entry : addFilms(result, LOOKS_FILMS, create, ordinalField,
-                            cloudField, strings, images)) {
+                    for (Object entry : addFilms(result, LOOKS_FILMS, resolved)) {
                         int icon = iconField.getInt(entry);
                         nameIconField.setInt(entry, nameIconHooked
-                                ? NAME_ICON_BASE | ordinalField.getInt(entry) : nameIcon);
+                                ? NAME_ICON_BASE | resolved.ordinal().getInt(entry)
+                                : LOOKS_NAME_ICON);
                         samplesField.set(entry, new ArrayList<>(List.of(icon, icon, icon)));
                         labelsField.set(entry, new ArrayList<>(List.of(icon, icon, icon)));
                         descField.setInt(entry, 0);
@@ -385,71 +449,93 @@ public class ModuleMain extends XposedModule {
                 }
                 return result;
             });
-            log(Log.INFO, TAG, "hooked " + LOOKS_CLASS + "." + LOOKS_METHOD + " (Leica Looks)");
+            log(Log.INFO, TAG, "hooked " + profile.looksClass() + "." + profile.looksMethod()
+                    + " (Leica Looks)");
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "cannot hook " + LOOKS_CLASS + "." + LOOKS_METHOD + ": " + t);
+            log(Log.WARN, TAG, "cannot hook " + profile.looksClass() + "." + profile.looksMethod()
+                    + ": " + t);
+            // Only worth telling the user on a phone that actually uses the Leica UI.
+            if ("LCC".equals(systemProperty("ro.theme_customize"))) {
+                problems.add(MSG_LEICA);
+            }
         }
     }
 
-    // Log-only hooks that show how big the filter list is at each stage between the camera's
-    // list builder and the panel, to find where the added items are dropped.
-    private void installDiagnostics(ClassLoader loader, Field ordinalField) {
-        watch(loader, "com.xiaomi.camera.effect.EffectController", "q", 1, "stored list",
-                ordinalField);
-        watch(loader, "s2.a", "n", 2, "restoreItems", ordinalField);
-        watch(loader, LOOKS_CLASS, LOOKS_METHOD, 0, "looks list", ordinalField);
-    }
-
-    private void watch(ClassLoader loader, String className, String methodName, int params,
-                       String label, Field ordinalField) {
+    private static String systemProperty(String key) {
         try {
-            var cls = Class.forName(className, false, loader);
-            for (var method : cls.getDeclaredMethods()) {
-                if (!method.getName().equals(methodName) || method.getParameterCount() != params) {
-                    continue;
-                }
-                hook(method).intercept(chain -> {
-                    Object result = chain.proceed();
-                    StringBuilder line = new StringBuilder(label).append(": args=");
-                    for (Object arg : chain.getArgs()) {
-                        if (arg instanceof List<?> in) {
-                            line.append("list(").append(in.size()).append(") ")
-                                    .append(ordinals(in, ordinalField)).append(' ');
-                        } else {
-                            line.append(arg).append(' ');
-                        }
-                    }
-                    if (result instanceof List<?> out) {
-                        line.append("-> list(").append(out.size()).append(") ")
-                                .append(ordinals(out, ordinalField));
-                    }
-                    log(Log.INFO, TAG, line.toString());
-                    return result;
-                });
-                log(Log.INFO, TAG, "watching " + className + "." + methodName);
-            }
+            return (String) Class.forName("android.os.SystemProperties")
+                    .getMethod("get", String.class).invoke(null, key);
         } catch (Throwable t) {
-            log(Log.WARN, TAG, "cannot watch " + className + "." + methodName + ": " + t);
+            return "";
         }
     }
 
-    private static String ordinals(List<?> list, Field ordinalField) {
-        StringBuilder out = new StringBuilder("[");
-        for (Object entry : list) {
-            try {
-                out.append(ordinalField.getInt(entry)).append(',');
-            } catch (Throwable ignored) {
-                out.append('?').append(',');
-            }
+    // ---- telling the user ----
+    // A module has no screen of its own inside the camera, so a problem is shown as a toast the
+    // first time the camera starts after a camera update, then not again for that camera version.
+    private static final String MSG_UNSUPPORTED =
+            "The camera's filter code is different from the layouts this module knows, so no "
+                    + "film filters were added. The module needs an update for this camera version.";
+    private static final String MSG_PANEL =
+            "Some film filters may not show in the filter panel on this camera version.";
+    private static final String MSG_LEICA =
+            "The Leica Looks list is different on this camera version, so the film filters were "
+                    + "not added there.";
+
+    private void scheduleNotice() {
+        if (problems.isEmpty() || !noticeScheduled.compareAndSet(false, true)) {
+            return;
         }
-        return out.append(']').toString();
+        var handler = new Handler(Looper.getMainLooper());
+        handler.postDelayed(new Runnable() {
+            private int attempts;
+
+            @Override
+            public void run() {
+                try {
+                    Application app = currentApplication();
+                    if (app == null) {
+                        if (++attempts < 8) {
+                            handler.postDelayed(this, 1500);
+                        }
+                        return;
+                    }
+                    showNotice(app);
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "could not show the notice: " + t);
+                }
+            }
+        }, 3000);
+    }
+
+    private void showNotice(Application app) throws Exception {
+        String version = app.getPackageManager().getPackageInfo(app.getPackageName(), 0)
+                .versionName;
+        StringBuilder text = new StringBuilder();
+        for (String problem : problems) {
+            text.append(text.length() == 0 ? "" : " ").append(problem);
+        }
+        String key = "notice_" + version + "_" + text.toString().hashCode();
+        var prefs = app.getSharedPreferences(TAG, Application.MODE_PRIVATE);
+        if (prefs.getBoolean(key, false)) {
+            return;
+        }
+        prefs.edit().putBoolean(key, true).apply();
+        Toast.makeText(app, TAG + " (camera " + version + "): " + text, Toast.LENGTH_LONG).show();
+    }
+
+    private static Application currentApplication() {
+        try {
+            return (Application) Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     // Appends any missing film items to the finished list. Leaves the list alone on any surprise.
     @SuppressWarnings("unchecked")
-    private List<Object> addFilms(Object result, Film[] films, Constructor<?> create,
-                                  Field ordinalField, Field cloudField, Class<?> strings,
-                                  Class<?> images) {
+    private List<Object> addFilms(Object result, Film[] films, Resolved resolved) {
         List<Object> created = new ArrayList<>();
         try {
             if (!(result instanceof List<?>)) {
@@ -458,18 +544,19 @@ public class ModuleMain extends XposedModule {
             List<Object> list = (List<Object>) result;
             Set<Integer> present = new HashSet<>();
             for (Object entry : list) {
-                present.add(ordinalField.getInt(entry));
+                present.add(resolved.ordinal().getInt(entry));
             }
             List<String> added = new ArrayList<>();
             for (Film film : films) {
                 if (present.contains(film.ordinal())) {
                     continue;
                 }
-                int name = strings.getField(film.stringId()).getInt(null);
-                int image = images.getField(film.imageId()).getInt(null);
-                Object entry = create.newInstance(PHOTO_CATEGORY, film.ordinal(), name, image, 0,
-                        film.order(), "NORMAL");
-                cloudField.setInt(entry, film.cloudId());
+                int name = resourceId(resolved.strings(), film.stringId(), "string");
+                int image = resourceId(resolved.images(), film.imageId(), "drawable", "mipmap",
+                        "raw");
+                Object entry = resolved.create().newInstance(PHOTO_CATEGORY, film.ordinal(), name,
+                        image, 0, film.order(), "NORMAL");
+                resolved.cloud().setInt(entry, film.cloudId());
                 list.add(entry);
                 created.add(entry);
                 added.add(film.label());
@@ -479,5 +566,25 @@ public class ModuleMain extends XposedModule {
             log(Log.ERROR, TAG, "could not add film filters", t);
         }
         return created;
+    }
+
+    // A resource id, from the camera's id class when it has one, otherwise looked up by name.
+    private static int resourceId(Class<?> ids, String name, String... types) throws Exception {
+        if (ids != null) {
+            try {
+                return ids.getField(name).getInt(null);
+            } catch (Throwable ignored) {
+            }
+        }
+        Application app = currentApplication();
+        if (app != null) {
+            for (String type : types) {
+                int id = app.getResources().getIdentifier(name, type, app.getPackageName());
+                if (id != 0) {
+                    return id;
+                }
+            }
+        }
+        throw new NoSuchFieldException("resource " + name);
     }
 }

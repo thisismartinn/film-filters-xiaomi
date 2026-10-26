@@ -3,16 +3,16 @@ plugins {
 }
 
 android {
-    namespace = "io.github.hieu.filmfilters"
+    namespace = "io.martin.hyperfilters"
     compileSdk = 37
     buildToolsVersion = "37.0.0"
 
     defaultConfig {
-        applicationId = "io.github.hieu.filmfilters"
+        applicationId = "io.martin.hyperfilters"
         minSdk = 26
         targetSdk = 37
-        versionCode = 23
-        versionName = "1.6.4"
+        versionCode = 24
+        versionName = "1.7.0"
     }
 
     buildTypes {
