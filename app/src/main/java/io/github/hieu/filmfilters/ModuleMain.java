@@ -82,9 +82,10 @@ public class ModuleMain extends XposedModule {
     // native "LEICA" line as measured on screen (26 px tall, 4 px stroke, letters 3-4 px apart,
     // 5 px between the two lines, at about 2.65 px per dp).
     private static final float LABEL_SIZE_DP = 36f;
-    private static final float LABEL_CAP_DP = 9.29f;
-    private static final float LABEL_GAP_DP = 1.05f;    // gap between letters, as native
-    private static final float LABEL_LINE_GAP_DP = 1.89f; // gap between the two lines, as native
+    private static final float LABEL_CAP_DP = 9.45f;
+    private static final float LABEL_GAP_DP = 1.05f;    // gap between letters, close to native
+    private static final float LABEL_LINE_GAP_DP = 2.25f; // gap between the two lines (31 px pitch at 2.65 px/dp), as native
+    private static final float LABEL_BLOCK_SHIFT_DP = -0.15f; // moves both lines up, as native
     private static final String LABEL_TOP_LINE = "FLM";
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
@@ -271,7 +272,9 @@ public class ModuleMain extends XposedModule {
     // The film label in the Leica label typeface, white on a transparent square the size of the
     // name icon; the panel tints its name images. Like the camera's own two-line labels, it has
     // a short top word ("FLM", for film) above the film's name, both lines centred as a block.
-    // Every label uses the same letter height, weight and spacing, and natural widths.
+    // Every label uses the same letter height, weight and spacing, and natural widths. Letter
+    // height and line positions are whole pixels, so the top and bottom edges of both lines are
+    // equally sharp (a fractional position blurs one edge and makes the line look shorter).
     private static Drawable nameDrawable(Resources resources, int ordinal) {
         String label = "";
         for (Film film : LOOKS_FILMS) {
@@ -281,11 +284,10 @@ public class ModuleMain extends XposedModule {
         }
         float density = resources.getDisplayMetrics().density;
         int size = Math.round(LABEL_SIZE_DP * density);
-        float cap = LeicaFont.CAP_HEIGHT;
-        float scale = LABEL_CAP_DP * density / cap;
-        float letterHeight = cap * scale;
-        float lineGap = LABEL_LINE_GAP_DP * density;
-        float top = (size - (2 * letterHeight + lineGap)) / 2f;
+        int letterHeight = Math.round(LABEL_CAP_DP * density);
+        int pitch = Math.round((LABEL_CAP_DP + LABEL_LINE_GAP_DP) * density);   // line 1 top to line 2 top
+        int top = Math.round((size - (letterHeight + pitch)) / 2f + LABEL_BLOCK_SHIFT_DP * density);
+        float scale = letterHeight / (float) LeicaFont.CAP_HEIGHT;
 
         Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         // Report the current screen density so the drawable is exactly size x size pixels
@@ -295,7 +297,7 @@ public class ModuleMain extends XposedModule {
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         paint.setColor(Color.WHITE);
         drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, density);
-        drawLine(canvas, paint, label, size, top + letterHeight + lineGap, scale, density);
+        drawLine(canvas, paint, label, size, top + pitch, scale, density);
         return new LabelDrawable(bitmap);
     }
 

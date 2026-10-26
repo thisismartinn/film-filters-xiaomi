@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.hieu.filmfilters"
         minSdk = 26
         targetSdk = 37
-        versionCode = 21
-        versionName = "1.6.2"
+        versionCode = 23
+        versionName = "1.6.4"
     }
 
     buildTypes {
