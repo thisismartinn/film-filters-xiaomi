@@ -108,12 +108,12 @@ public class ModuleMain extends XposedModule {
     private static final float LABEL_CAP_DP = 9.45f;
     private static final float LABEL_GAP_DP = 1.05f;    // gap between letters, close to native
     private static final float LABEL_LINE_GAP_DP = 2.25f; // gap between the two lines (31 px pitch at 2.65 px/dp), as native
-    private static final float LABEL_BLOCK_SHIFT_DP = 0.6f; // moves both lines down: the ring adds 2 px above the letters
-    // The native labels have a light gray outline around the letters (about 2 px at 2.65 px per
+    private static final float LABEL_BLOCK_SHIFT_DP = 0.75f; // moves both lines down: the ring adds about 2 px above the letters
+    // The native labels have a light gray outline around the letters (about 1.75 px at 2.65 px per
     // dp): white letters keep a gray rim on a bright background, and gray (unselected) letters get
     // that much heavier. The outline is not tinted, only the letters are.
-    private static final float LABEL_RING_DP = 0.75f;
-    private static final int LABEL_RING_COLOR = 0xFFC4C4C4;
+    private static final float LABEL_RING_DP = 0.66f;
+    private static final int LABEL_RING_COLOR = 0xFFC1C1C1;
     private static final String LABEL_TOP_LINE = "FLM";
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
