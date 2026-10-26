@@ -108,7 +108,12 @@ public class ModuleMain extends XposedModule {
     private static final float LABEL_CAP_DP = 9.45f;
     private static final float LABEL_GAP_DP = 1.05f;    // gap between letters, close to native
     private static final float LABEL_LINE_GAP_DP = 2.25f; // gap between the two lines (31 px pitch at 2.65 px/dp), as native
-    private static final float LABEL_BLOCK_SHIFT_DP = -0.15f; // moves both lines up, as native
+    private static final float LABEL_BLOCK_SHIFT_DP = 0.6f; // moves both lines down: the ring adds 2 px above the letters
+    // The native labels have a light gray outline around the letters (about 2 px at 2.65 px per
+    // dp): white letters keep a gray rim on a bright background, and gray (unselected) letters get
+    // that much heavier. The outline is not tinted, only the letters are.
+    private static final float LABEL_RING_DP = 0.75f;
+    private static final int LABEL_RING_COLOR = 0xFFC4C4C4;
     private static final String LABEL_TOP_LINE = "FLM";
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
@@ -271,16 +276,20 @@ public class ModuleMain extends XposedModule {
     // (the top banner tints its name icon), so it has to be one for the label to be tinted too.
     private static final class LabelDrawable extends VectorDrawable {
         private final Bitmap bitmap;
+        private final Bitmap ring;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private ColorStateList tint;
         private PorterDuff.Mode tintMode = PorterDuff.Mode.SRC_IN;
 
-        LabelDrawable(Bitmap bitmap) {
+        LabelDrawable(Bitmap bitmap, Bitmap ring) {
             this.bitmap = bitmap;
+            this.ring = ring;
         }
 
         @Override
         public void draw(Canvas canvas) {
+            canvas.drawBitmap(ring, null, getBounds(), ringPaint);
             canvas.drawBitmap(bitmap, null, getBounds(), paint);
         }
 
@@ -297,6 +306,7 @@ public class ModuleMain extends XposedModule {
         @Override
         public void setAlpha(int alpha) {
             paint.setAlpha(alpha);
+            ringPaint.setAlpha(alpha);
             invalidateSelf();
         }
 
@@ -360,21 +370,35 @@ public class ModuleMain extends XposedModule {
         int top = Math.round((size - (letterHeight + pitch)) / 2f + LABEL_BLOCK_SHIFT_DP * density);
         float scale = letterHeight / (float) LeicaFont.CAP_HEIGHT;
 
-        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        // Report the current screen density so the drawable is exactly size x size pixels
+        // Report the current screen density so the drawables are exactly size x size pixels
         // (a vector of 36 dp is, whatever display-size setting is in use).
-        bitmap.setDensity(resources.getDisplayMetrics().densityDpi);
+        int densityDpi = resources.getDisplayMetrics().densityDpi;
+        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        bitmap.setDensity(densityDpi);
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         paint.setColor(Color.WHITE);
-        drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, density);
-        drawLine(canvas, paint, label, size, top + pitch, scale, density);
-        return new LabelDrawable(bitmap);
+        drawLine(canvas, paint, LABEL_TOP_LINE, size, top, scale, density, 0);
+        drawLine(canvas, paint, label, size, top + pitch, scale, density, 0);
+
+        // The outline: the same letters spread outwards, in a fixed gray.
+        Bitmap ring = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        ring.setDensity(densityDpi);
+        Canvas ringCanvas = new Canvas(ring);
+        Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        ringPaint.setColor(LABEL_RING_COLOR);
+        ringPaint.setColorFilter(new PorterDuffColorFilter(LABEL_RING_COLOR, PorterDuff.Mode.SRC_IN));
+        float spread = LABEL_RING_DP * density;
+        drawLine(ringCanvas, ringPaint, LABEL_TOP_LINE, size, top, scale, density, spread);
+        drawLine(ringCanvas, ringPaint, label, size, top + pitch, scale, density, spread);
+        return new LabelDrawable(bitmap, ring);
     }
 
-    // One line of text, centred horizontally, with its top edge at y.
+    // One line of text, centred horizontally, with its top edge at y. With a spread, every letter
+    // is drawn again at points on circles of that radius around its place, which grows it
+    // outwards by that much (the outline).
     private static void drawLine(Canvas canvas, Paint paint, String text, int width, float y,
-                                 float scale, float density) {
+                                 float scale, float density, float spread) {
         float cap = LeicaFont.CAP_HEIGHT;
         float gap = LABEL_GAP_DP * density;
         float hyphen = HYPHEN_LENGTH * cap * scale;
@@ -389,19 +413,37 @@ public class ModuleMain extends XposedModule {
             if (c == '-') {
                 float thick = LeicaFont.STROKE * scale;
                 float mid = y + cap * scale / 2f;
-                canvas.drawRoundRect(new RectF(x, mid - thick / 2f, x + hyphen, mid + thick / 2f),
-                        thick / 2f, thick / 2f, paint);
+                float grown = thick / 2f + spread;
+                canvas.drawRoundRect(new RectF(x - spread, mid - grown, x + hyphen + spread,
+                        mid + grown), grown, grown, paint);
                 x += hyphen;
             } else {
                 Bitmap glyph = glyph(c);
                 if (glyph != null) {
                     float glyphWidth = glyph.getWidth() * scale;
-                    canvas.drawBitmap(glyph, null,
-                            new RectF(x, y, x + glyphWidth, y + cap * scale), paint);
+                    drawSpread(canvas, glyph, x, y, glyphWidth, cap * scale, spread, paint);
                     x += glyphWidth;
                 }
             }
             x += gap;
+        }
+    }
+
+    private static void drawSpread(Canvas canvas, Bitmap glyph, float x, float y, float w, float h,
+                                   float spread, Paint paint) {
+        if (spread <= 0) {
+            canvas.drawBitmap(glyph, null, new RectF(x, y, x + w, y + h), paint);
+            return;
+        }
+        for (int ring = 1; ring <= 2; ring++) {
+            float radius = spread * ring / 2f;
+            for (int step = 0; step < 16; step++) {
+                double angle = Math.PI * 2 * step / 16;
+                float dx = (float) Math.cos(angle) * radius;
+                float dy = (float) Math.sin(angle) * radius;
+                canvas.drawBitmap(glyph, null,
+                        new RectF(x + dx, y + dy, x + dx + w, y + dy + h), paint);
+            }
         }
     }
 
