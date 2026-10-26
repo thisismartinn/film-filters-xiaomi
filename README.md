@@ -30,7 +30,7 @@ The film filters come from older camera builds, and their code is still present 
 | -------------- | ---- | ----- |
 | 5.3.000460.0 | HyperOS 2 | Has the film filters in its photo filter list. |
 | 6.3.007010.0 | HyperOS 3 | Same filter code; class names are not obfuscated. |
-| 6.7.000280.0 | HyperOS 4.0.5.0 | The build the module targets; class names are obfuscated. |
+| 6.7.000280.0 | HyperOS 4 | The build the module targets; class names are obfuscated. |
 
 The filter LUTs are byte-identical across these builds.
 
