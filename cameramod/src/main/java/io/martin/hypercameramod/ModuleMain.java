@@ -60,11 +60,12 @@ public class ModuleMain extends XposedModule {
     // The photography style picker (Leica Authentic, Leica Vibrant, and Original once its bit is
     // set). The Leica UI draws each as a badge from a mapping that knows only two values, so
     // Original comes out as the Authentic badge; the module swaps in its own "ORIG" badge.
-    private record StyleProfile(String name, String listClass, String itemClass) {
+    private record StyleProfile(String name, String listClass, String itemClass,
+                                String currentIconMethod, String valueIconMethod) {
     }
 
     private static final StyleProfile[] STYLE_PROFILES = {
-            new StyleProfile("6.7", "s2.m", "com.android.camera.data.data.d"),
+            new StyleProfile("6.7", "s2.m", "com.android.camera.data.data.d", "o", "r"),
     };
     private static final String STYLE_ORIGINAL = "2";
     private static final String STYLE_AUTHENTIC = "1";
@@ -209,6 +210,10 @@ public class ModuleMain extends XposedModule {
             try {
                 Class<?> list = Class.forName(profile.listClass(), false, loader);
                 Method getItems = list.getDeclaredMethod("getItems");
+                // The list is filled by one method that takes the camera's mode data. The list is
+                // extended right after that: the style picker's adapter keeps the list and counts
+                // its items once, so growing it on a later read breaks the picker.
+                Method build = findBuilder(list);
                 Class<?> item = Class.forName(profile.itemClass(), false, loader);
                 allocate(item);   // fail now, not in the hook, if instances cannot be made
                 Field key = field(item, "r");
@@ -222,10 +227,10 @@ public class ModuleMain extends XposedModule {
                 Class<?> strings = Class.forName(profile.stringIds(), false, loader);
                 Class<?> images = Class.forName(profile.imageIds(), false, loader);
 
-                hook(getItems).intercept(chain -> {
+                hook(build).intercept(chain -> {
                     Object result = chain.proceed();
                     try {
-                        if (result instanceof List<?> raw) {
+                        if (getItems.invoke(chain.getThisObject()) instanceof List<?> raw) {
                             @SuppressWarnings("unchecked")
                             List<Object> items = (List<Object>) raw;
                             Object ccd = null;
@@ -271,8 +276,8 @@ public class ModuleMain extends XposedModule {
                 legendHooked = true;
                 installAssetHooks();
                 installTextHook();
-                log(Log.INFO, TAG, "hooked " + profile.listClass() + ".getItems (Leica Essential, "
-                        + "layout " + profile.name() + ")");
+                log(Log.INFO, TAG, "hooked " + profile.listClass() + "." + build.getName()
+                        + " (Leica Essential, layout " + profile.name() + ")");
                 return;
             } catch (Throwable t) {
                 log(Log.WARN, TAG, "Leica Essential layout " + profile.name()
@@ -284,6 +289,27 @@ public class ModuleMain extends XposedModule {
         if (!problems.contains(MSG_LEGEND)) {
             problems.add(MSG_LEGEND);
         }
+    }
+
+    // The method that fills a component's item list: not static, returns nothing and takes one
+    // argument from the camera's data package. Named differently in each build.
+    private static Method findBuilder(Class<?> cls) throws NoSuchMethodException {
+        Method found = null;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (m.getReturnType() == void.class && m.getParameterCount() == 1
+                    && !java.lang.reflect.Modifier.isStatic(m.getModifiers())
+                    && !m.isSynthetic()
+                    && m.getParameterTypes()[0].getName().startsWith("com.android.camera.data.data.")) {
+                if (found != null) {
+                    throw new NoSuchMethodException("more than one list builder in " + cls.getName());
+                }
+                found = m;
+            }
+        }
+        if (found == null) {
+            throw new NoSuchMethodException("no list builder in " + cls.getName());
+        }
+        return found;
     }
 
     // The id of the camera resource that matches the CCD one in the same id class (by the name the
@@ -383,6 +409,34 @@ public class ModuleMain extends XposedModule {
                         }
                     } catch (Throwable t) {
                         log(Log.ERROR, TAG, "could not fix the Original colour style badge", t);
+                    }
+                    return result;
+                });
+                // The badge of the chosen style (top bar) and of a given style come from two more
+                // methods of the same component, with the same two-value mapping.
+                Method getValue = list.getMethod("getComponentValue", int.class);
+                hook(list.getDeclaredMethod(profile.currentIconMethod())).intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        if (result instanceof Integer id && isLeicaBadge(id)
+                                && STYLE_ORIGINAL.equals(getValue.invoke(chain.getThisObject(), 253))) {
+                            return ASSET_ICON_BASE | ASSET_ORIGINAL_BADGE;
+                        }
+                    } catch (Throwable t) {
+                        log(Log.ERROR, TAG, "could not fix the chosen style badge", t);
+                    }
+                    return result;
+                });
+                hook(list.getDeclaredMethod(profile.valueIconMethod(), String.class))
+                        .intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        if (result instanceof Integer id && isLeicaBadge(id)
+                                && STYLE_ORIGINAL.equals(chain.getArg(0))) {
+                            return ASSET_ICON_BASE | ASSET_ORIGINAL_BADGE;
+                        }
+                    } catch (Throwable t) {
+                        log(Log.ERROR, TAG, "could not fix the style badge", t);
                     }
                     return result;
                 });
