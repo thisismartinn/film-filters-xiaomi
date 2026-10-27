@@ -140,6 +140,7 @@ public class ModuleMain extends XposedModule {
     private static final float HYPHEN_LENGTH = 0.5f;    // hyphen length, as a share of letter height
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
 
+    private final Set<String> loggedCategories = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile boolean hooked;
     private volatile boolean nameIconHooked;
     // What did not work, shown to the user once per camera version (see scheduleNotice).
@@ -254,6 +255,10 @@ public class ModuleMain extends XposedModule {
             hook(categoryList).intercept(chain -> {
                 Object result = chain.proceed();
                 Object category = chain.getArg(0);
+                if (loggedCategories.add(String.valueOf(category))) {
+                    log(Log.INFO, TAG, "filter list asked for category " + category + ": "
+                            + (result instanceof List<?> l ? l.size() : "none") + " items");
+                }
                 if (category instanceof Integer c && c == STANDARD_CATEGORY) {
                     addFilms(result, FILMS, resolved);
                 }
@@ -288,6 +293,7 @@ public class ModuleMain extends XposedModule {
             hook(reload).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
+                    log(Log.INFO, TAG, "strip reload, mode " + chain.getArg(0) + ": " + result);
                     if (Boolean.TRUE.equals(result)) {
                         restoreOrder(getList.invoke(chain.getThisObject()), profile, loader, resolved);
                     }
@@ -303,6 +309,7 @@ public class ModuleMain extends XposedModule {
                     // them until the camera next reloads its cloud data, so reload it now: the
                     // camera adds the filters its list has and the strip lacks, and the order is
                     // put right below.
+                    log(Log.INFO, TAG, "strip set up, mode " + chain.getArg(0));
                     Application app = currentApplication();
                     Object cloud = Class.forName(profile.cloudClass(), false, loader)
                             .getMethod(profile.cloudMethod()).invoke(null);
