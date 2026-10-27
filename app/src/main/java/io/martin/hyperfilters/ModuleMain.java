@@ -314,6 +314,53 @@ public class ModuleMain extends XposedModule {
 
     // A component filter is a film when its key is one given above or, for a strip saved by an
     // earlier version, when its name is a film's
+    // How many films a strip holds
+    private int stripFilms(Object listObject, Profile profile, Resolved resolved) throws Exception {
+        if (!(listObject instanceof List<?> list) || list.isEmpty()) {
+            return 0;
+        }
+        Field data = findField(list.get(0).getClass(), profile.itemDataField());
+        Set<Integer> names = new HashSet<>();
+        for (Film[] group : new Film[][] {FILMS, LOOKS_FILMS}) {
+            for (Film film : group) {
+                names.add(resourceId(resolved.strings(), film.stringId(), "string"));
+            }
+        }
+        int count = 0;
+        Field title = null;
+        for (Object item : list) {
+            Object filter = data.get(item);
+            if (filter == null) {
+                continue;
+            }
+            if (title == null) {
+                title = field(filter.getClass(), "l");
+            }
+            if (isFilm(filter, title, names)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    // The film's own sort number (R600, P100F, F-50, KC64, KP160), found by key or by name
+    private static int filmDefaultOrder(Object filter, Field title, Resolved resolved) {
+        try {
+            Object key = field(filter.getClass(), "r").get(filter);
+            int name = title.getInt(filter);
+            for (Film[] group : new Film[][] {LOOKS_FILMS, FILMS}) {
+                for (Film film : group) {
+                    if (key instanceof String k && k.equals(String.valueOf(FILM_KEY_BASE + film.ordinal()))
+                            || name == resourceId(resolved.strings(), film.stringId(), "string")) {
+                        return film.order();
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return Integer.MAX_VALUE;
+    }
+
     private static boolean isFilm(Object filter, Field title, Set<Integer> names) throws Exception {
         Object key = field(filter.getClass(), "r").get(filter);
         if (key instanceof String k && k.matches("\\d+")) {
@@ -365,11 +412,17 @@ public class ModuleMain extends XposedModule {
             Method init = workspace.getDeclaredMethod(profile.initMethod(), int.class);
             Method getList = workspace.getMethod("getList");
             hook(reload).intercept(chain -> {
+                boolean fresh = false;
+                try {
+                    fresh = stripFilms(getList.invoke(chain.getThisObject()), profile, resolved) == 0;
+                } catch (Throwable ignored) {
+                }
                 Object result = chain.proceed();
                 try {
                     log(Log.INFO, TAG, "strip reload, mode " + chain.getArg(0) + ": " + result);
                     if (Boolean.TRUE.equals(result)) {
-                        restoreOrder(getList.invoke(chain.getThisObject()), profile, loader, resolved);
+                        restoreOrder(getList.invoke(chain.getThisObject()), profile, loader, resolved,
+                                fresh);
                     }
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "could not order the filter strip", t);
@@ -379,6 +432,8 @@ public class ModuleMain extends XposedModule {
             hook(init).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
+                    boolean fresh = stripFilms(getList.invoke(chain.getThisObject()), profile,
+                            resolved) == 0;
                     // A strip that was saved before the films existed (or lost them) never gets
                     // them until the camera next reloads its cloud data, so reload it now: the
                     // camera adds the filters its list has and the strip lacks, and the order is
@@ -397,7 +452,8 @@ public class ModuleMain extends XposedModule {
                     } else {
                         log(Log.WARN, TAG, "no reload at start: app " + app + ", cloud " + cloud);
                     }
-                    restoreOrder(getList.invoke(chain.getThisObject()), profile, loader, resolved);
+                    restoreOrder(getList.invoke(chain.getThisObject()), profile, loader, resolved,
+                            fresh);
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "could not order the filter strip", t);
                 }
@@ -412,7 +468,7 @@ public class ModuleMain extends XposedModule {
 
     @SuppressWarnings("unchecked")
     private void restoreOrder(Object listObject, Profile profile, ClassLoader loader,
-            Resolved resolved)
+            Resolved resolved, boolean fresh)
             throws Exception {
         if (!(listObject instanceof List<?>) || ((List<?>) listObject).isEmpty()) {
             return;
@@ -458,12 +514,15 @@ public class ModuleMain extends XposedModule {
             }
             (film ? films : others).add(item);
         }
-        films.sort((a, b) -> {
-            Integer ra = rank.get(safeGet(data, a));
-            Integer rb = rank.get(safeGet(data, b));
-            return Integer.compare(ra == null ? Integer.MAX_VALUE : ra,
-                    rb == null ? Integer.MAX_VALUE : rb);
-        });
+        // Films that are new to the strip get the default order (the films' own sort numbers);
+        // films that were already there keep the user's order.
+        if (fresh) {
+            Field titleField = title;
+            films.sort((a, b) -> Integer.compare(filmDefaultOrder(safeGet(data, a), titleField, resolved),
+                    filmDefaultOrder(safeGet(data, b), titleField, resolved)));
+        }
+        log(Log.INFO, TAG, "films in the strip: " + films.size() + (fresh ? ", new, default order"
+                : ", kept in the user's order"));
         List<Object> sorted = new ArrayList<>(others);
         sorted.addAll(films);
         log(Log.INFO, TAG, "filter component: " + official.size() + " items");
