@@ -43,6 +43,7 @@ To get support for a new camera build, open an issue with the camera version and
 1. **Add the items.** The camera builds its photo filter list in one method. The module hooks it and appends the four missing items, using the camera's own names and thumbnails. Resource ids come from the camera's resource classes, or are looked up by name when a build has no such class.
 2. **Skip the cloud merge.** The filter panel merges the local list with the cloud filter list and drops any local filter the cloud list does not name. The module makes the panel's merge check return `false`, so the panel uses the local list as it is.
 3. **Leica UI.** The Leica UI builds its own "Looks" list from a separate table. The module appends the five filters there too.
+4. **Order.** The camera's newer filter panel (switched on by `camera.feature.styleVersion` 2 or more) lists items it does not know in the opposite order to how they are added. When that value is set, the module adds the films the other way round so R600 stays first.
 
 | Target (profile 6.7) | Purpose |
 | -------------------- | ------- |

@@ -602,7 +602,11 @@ public class ModuleMain extends XposedModule {
                 present.add(resolved.ordinal().getInt(entry));
             }
             List<String> added = new ArrayList<>();
-            for (Film film : films) {
+            // With the camera's newer filter panel (camera.feature.styleVersion 2 or more) the
+            // panel lists items it does not know in the opposite order to how they are added, so
+            // they are added the other way round to keep R600 first.
+            Film[] ordered = styleVersion() >= 2 ? reversed(films) : films;
+            for (Film film : ordered) {
                 if (present.contains(film.ordinal())) {
                     continue;
                 }
@@ -621,6 +625,24 @@ public class ModuleMain extends XposedModule {
             log(Log.ERROR, TAG, "could not add film filters", t);
         }
         return created;
+    }
+
+    private static int styleVersion() {
+        try {
+            return (Integer) Class.forName("android.os.SystemProperties")
+                    .getMethod("getInt", String.class, int.class)
+                    .invoke(null, "camera.feature.styleVersion", 0);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static Film[] reversed(Film[] films) {
+        Film[] out = new Film[films.length];
+        for (int i = 0; i < films.length; i++) {
+            out[i] = films[films.length - 1 - i];
+        }
+        return out;
     }
 
     // A resource id, from the camera's id class when it has one, otherwise looked up by name.
