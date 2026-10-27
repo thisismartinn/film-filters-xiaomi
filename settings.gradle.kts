@@ -25,3 +25,4 @@ dependencyResolutionManagement {
 rootProject.name = "HyperFilmFilters"
 
 include(":app")
+include(":cameramod")

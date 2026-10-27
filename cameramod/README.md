@@ -1,0 +1,58 @@
+# HyperCameraMod
+
+An LSPosed/Vector module (libxposed API 101-102) that turns on three features the Xiaomi Camera on HyperOS 4 already contains but leaves off for the Xiaomi 17 Ultra. It is separate from HyperFilmFilters, which adds the film filters.
+
+## What it does
+
+| Feature | What changes in the camera |
+| ------- | -------------------------- |
+| Palette and Parameters | The filter edit panel gets the Palette tab and the full Parameters list (tone, saturation, cold/warm, cyan/magenta, noise, soft light, texture, vignette), plus saving, sharing and importing filter presets. |
+| Original colour style | "Original" appears next to Leica Authentic and Leica Vibrant in the photography style picker. |
+| Leica Essential CMOS (M10R) | "CMOS" is added to the Leica Essential style list, between B&W (M3) and CCD (M9). |
+
+Original colour style and CMOS only change the photo if the phone's camera hardware layer implements them. The camera sends the chosen style to the hardware layer; the module only makes the choice available.
+
+## Camera versions
+
+The module does not check the camera's version number. Each feature looks for what it needs and is skipped, with a log line, when it is not there.
+
+| Feature | How it is found | Version dependence |
+| ------- | --------------- | ------------------ |
+| Palette and Parameters | The system property `camera.feature.styleVersion`, which the camera reads to decide whether to build the full Parameters list. | None. |
+| Original colour style | The camera characteristic `xiaomi.capabilities.stylizationTypeMask`, bit 3. | None. |
+| CMOS (M10R) | The Leica Essential list class, by a layout ("profile") that names it. | Tested: camera 6.7.000280.0 (HyperOS 4.0.5.0). 6.7.000070.0 already has the entry. |
+
+When the Leica Essential list is not one the module knows, it leaves the camera unchanged and shows a toast in Camera, once per camera version.
+
+## How it works
+
+1. **Palette and Parameters.** The camera reads `camera.feature.styleVersion` through `android.os.SystemProperties` and builds the full Parameters list when it is 2 or more. The module returns 2 for that key when the real value is lower. The same effect without the module is `setprop camera.feature.styleVersion 2` as root, which resets on reboot.
+2. **Original colour style.** The camera shows Original only when bit 3 of `xiaomi.capabilities.stylizationTypeMask` is set. The module sets the bit when the camera reads the characteristic.
+3. **CMOS.** The camera's Leica Essential list is built in `s2.A`. In this build the CMOS entry is compiled out, along with three of its images. The module appends the entry to the list returned by `getItems()` and answers the three image ids from its own assets.
+
+## Use
+
+1. Install the module and enable it in LSPosed or Vector. Set its scope to **Camera** only.
+2. Force-stop Camera and open it again.
+
+If the camera misbehaves, disable the module and force-stop Camera to restore the stock behaviour.
+
+## Logs
+
+The module logs to logcat under the tag `HyperCameraMod`:
+
+```bash
+su -c "logcat -d | grep HyperCameraMod"
+```
+
+## Build
+
+A Gradle module in this repository. It needs the Android SDK (compileSdk 37, build-tools 37.0.0); put `sdk.dir=...` in `local.properties`, then:
+
+```bash
+./gradlew :cameramod:assembleRelease
+```
+
+## Disclaimer
+
+An unofficial community module, not affiliated with Xiaomi or Leica. The three CMOS images in `src/main/assets/m10r` are taken from Xiaomi Camera. It hooks internal camera code and is provided as is, for personal use. Use it at your own risk.

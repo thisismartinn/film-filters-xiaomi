@@ -124,7 +124,6 @@ public class ModuleMain extends XposedModule {
     private static final Map<Character, Bitmap> GLYPH_CACHE = new HashMap<>();
 
     private volatile boolean hooked;
-    private volatile boolean stylizationHooked;
     private volatile boolean nameIconHooked;
     // What did not work, shown to the user once per camera version (see scheduleNotice).
     private final List<String> problems = new CopyOnWriteArrayList<>();
@@ -153,7 +152,6 @@ public class ModuleMain extends XposedModule {
             return;
         }
         problems.clear();
-        installStylizationHook();
         for (Profile profile : PROFILES) {
             Resolved resolved;
             try {
@@ -185,39 +183,6 @@ public class ModuleMain extends XposedModule {
         log(Log.WARN, TAG, stage + ": the camera's filter code is not one this module knows "
                 + "(a different camera version?); the camera is left unchanged");
         problems.add(MSG_UNSUPPORTED);
-    }
-
-    // The camera offers the "Original" colour style (next to Leica Authentic and Leica Vibrant)
-    // only when bit 3 of the camera characteristic xiaomi.capabilities.stylizationTypeMask is set.
-    // The camera reads it through CameraCharacteristics.get, so the bit is added there; the vendor
-    // key is named in the camera's own metadata, so this does not depend on the camera's classes.
-    private static final String STYLIZATION_KEY = "xiaomi.capabilities.stylizationTypeMask";
-    private static final int STYLIZATION_ORIGINAL = 1 << 3;
-
-    private void installStylizationHook() {
-        if (stylizationHooked) {
-            return;
-        }
-        try {
-            var method = android.hardware.camera2.CameraCharacteristics.class.getDeclaredMethod(
-                    "get", android.hardware.camera2.CameraCharacteristics.Key.class);
-            hook(method).intercept(chain -> {
-                Object result = chain.proceed();
-                if (result instanceof Integer mask && chain.getArg(0)
-                        instanceof android.hardware.camera2.CameraCharacteristics.Key<?> key
-                        && STYLIZATION_KEY.equals(key.getName())
-                        && (mask & STYLIZATION_ORIGINAL) == 0) {
-                    log(Log.INFO, TAG, STYLIZATION_KEY + " " + mask + " -> "
-                            + (mask | STYLIZATION_ORIGINAL));
-                    return mask | STYLIZATION_ORIGINAL;
-                }
-                return result;
-            });
-            stylizationHooked = true;
-            log(Log.INFO, TAG, "hooked CameraCharacteristics.get (Original colour style)");
-        } catch (Throwable t) {
-            log(Log.WARN, TAG, "cannot hook CameraCharacteristics.get: " + t);
-        }
     }
 
     private static java.lang.reflect.Method listMethod(Profile profile, ClassLoader loader)
