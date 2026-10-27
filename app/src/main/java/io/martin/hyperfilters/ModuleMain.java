@@ -316,6 +316,7 @@ public class ModuleMain extends XposedModule {
                 return 0;
             }
         });
+        logStrip(list, data, sorted.equals(list));
         if (sorted.equals(list)) {
             return;
         }
@@ -326,6 +327,33 @@ public class ModuleMain extends XposedModule {
         }
         log(Log.INFO, TAG, "put the filter strip back in the camera's order (" + list.size()
                 + " items)");
+    }
+
+    // What the strip holds, for the log: its size and the names of its last items
+    private static void logStrip(List<Object> list, Field data, boolean inOrder) {
+        try {
+            StringBuilder tail = new StringBuilder();
+            Application app = currentApplication();
+            Field title = null;
+            for (int i = Math.max(0, list.size() - 8); i < list.size(); i++) {
+                Object filter = data.get(list.get(i));
+                if (filter == null) {
+                    tail.append("[no data] ");
+                    continue;
+                }
+                if (title == null) {
+                    title = field(filter.getClass(), "l");
+                }
+                int id = title.getInt(filter);
+                String name = id > 0 && app != null
+                        ? app.getResources().getResourceEntryName(id) : "none";
+                tail.append(name).append(' ');
+            }
+            log(Log.INFO, TAG, "filter strip: " + list.size() + " items, "
+                    + (inOrder ? "in order" : "out of order") + ", last: " + tail);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "could not describe the filter strip: " + t);
+        }
     }
 
     // A field of a class or of one of its superclasses
