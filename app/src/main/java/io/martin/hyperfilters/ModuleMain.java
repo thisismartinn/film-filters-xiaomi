@@ -285,7 +285,12 @@ public class ModuleMain extends XposedModule {
                     if (app != null && cloud instanceof Map<?, ?> map) {
                         @SuppressWarnings({"unchecked", "rawtypes"})
                         var copy = new java.util.concurrent.ConcurrentHashMap(map);
-                        reloadMethod.invoke(chain.getThisObject(), chain.getArg(0), app, copy);
+                        Object reloaded = reloadMethod.invoke(chain.getThisObject(), chain.getArg(0),
+                                app, copy);
+                        log(Log.INFO, TAG, "reloaded the filter strip at start: " + reloaded
+                                + ", cloud entries " + copy.size());
+                    } else {
+                        log(Log.WARN, TAG, "no reload at start: app " + app + ", cloud " + cloud);
                     }
                     restoreOrder(getList.invoke(chain.getThisObject()), profile, loader);
                 } catch (Throwable t) {
@@ -333,6 +338,7 @@ public class ModuleMain extends XposedModule {
                 return 0;
             }
         });
+        log(Log.INFO, TAG, "filter component: " + official.size() + " items");
         logStrip(list, data, sorted.equals(list));
         if (sorted.equals(list)) {
             return;
