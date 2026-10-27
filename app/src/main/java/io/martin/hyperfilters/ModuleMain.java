@@ -70,7 +70,10 @@ public class ModuleMain extends XposedModule {
             // registry.
             String workspaceClass, String itemDataField, String sortIndexMethod,
             String initMethod, String registryClass, String registryMethod, String lookupMethod,
-            String componentClass) {
+            String componentClass,
+            // The camera's cloud filter data, which the reload method reads along with the
+            // component; the module passes it so that reloading does not drop cloud filters.
+            String cloudClass, String cloudMethod) {
     }
 
     private static final Profile[] PROFILES = {
@@ -81,7 +84,7 @@ public class ModuleMain extends XposedModule {
                     "com.android.camera.fragment.m0", "ut",
                     "E9.h", "c",
                     "com.android.camera.features.mode.capture.e", "L", "Y", "G",
-                    "h2.a", "a", "x", "s2.t"),
+                    "h2.a", "a", "x", "s2.t", "Ei.q", "b"),
     };
 
     // ic_vector_lc_looks_filter_name_icon_standard in 6.7.000280.0 (no R classes at runtime).
@@ -254,6 +257,8 @@ public class ModuleMain extends XposedModule {
             if (reload == null) {
                 throw new NoSuchMethodException("no filter reload method in " + workspace);
             }
+            final Method reloadMethod = reload;
+            reloadMethod.setAccessible(true);
             Method init = workspace.getDeclaredMethod(profile.initMethod(), int.class);
             Method getList = workspace.getMethod("getList");
             hook(reload).intercept(chain -> {
@@ -270,6 +275,18 @@ public class ModuleMain extends XposedModule {
             hook(init).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
+                    // A strip that was saved before the films existed (or lost them) never gets
+                    // them until the camera next reloads its cloud data, so reload it now: the
+                    // camera adds the filters its list has and the strip lacks, and the order is
+                    // put right below.
+                    Application app = currentApplication();
+                    Object cloud = Class.forName(profile.cloudClass(), false, loader)
+                            .getMethod(profile.cloudMethod()).invoke(null);
+                    if (app != null && cloud instanceof Map<?, ?> map) {
+                        @SuppressWarnings({"unchecked", "rawtypes"})
+                        var copy = new java.util.concurrent.ConcurrentHashMap(map);
+                        reloadMethod.invoke(chain.getThisObject(), chain.getArg(0), app, copy);
+                    }
                     restoreOrder(getList.invoke(chain.getThisObject()), profile, loader);
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "could not order the filter strip", t);
