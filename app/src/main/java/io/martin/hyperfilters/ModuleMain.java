@@ -330,7 +330,7 @@ public class ModuleMain extends XposedModule {
     }
 
     // What the strip holds, for the log: its size and the names of its last items
-    private static void logStrip(List<Object> list, Field data, boolean inOrder) {
+    private void logStrip(List<Object> list, Field data, boolean inOrder) {
         try {
             StringBuilder tail = new StringBuilder();
             Application app = currentApplication();
