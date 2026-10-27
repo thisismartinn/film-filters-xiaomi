@@ -197,6 +197,7 @@ public class ModuleMain extends XposedModule {
             installNameIconHook();
             installLooksHook(profile, loader, resolved);
             installCategoryHook(profile, loader, resolved);
+            installComponentHook(loader, resolved);
             installOrderHook(profile, loader, resolved);
             return;
         }
@@ -269,6 +270,61 @@ public class ModuleMain extends XposedModule {
         } catch (Throwable t) {
             log(Log.WARN, TAG, "cannot hook the standard filter list: " + t);
         }
+    }
+
+    // The camera builds its filter component from its local filter list, or, when it holds cloud
+    // filter data for the mode, from that data merged with the local list, which leaves the
+    // films out. When the films are missing after that, build it again from the local list.
+    private void installComponentHook(ClassLoader loader, Resolved resolved) {
+        try {
+            Class<?> cls = Class.forName("w2.P", false, loader);
+            Method build = cls.getDeclaredMethod("c", int.class, Map.class);
+            Method items = cls.getMethod("getItems");
+            hook(build).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object mode = chain.getArg(0);
+                    Map<?, ?> cloud = (Map<?, ?>) chain.getArg(1);
+                    List<?> built = (List<?>) items.invoke(chain.getThisObject());
+                    boolean hasCloud = cloud != null && cloud.containsKey(mode);
+                    int films = countFilms(built, resolved);
+                    log(Log.INFO, TAG, "filter component for " + mode + ": " + built.size()
+                            + " items, " + films + " films, cloud data " + hasCloud);
+                    if (films == 0 && hasCloud) {
+                        Map<Object, Object> local = new java.util.concurrent.ConcurrentHashMap<>(cloud);
+                        local.remove(mode);
+                        build.invoke(chain.getThisObject(), mode, local);
+                        built = (List<?>) items.invoke(chain.getThisObject());
+                        log(Log.INFO, TAG, "rebuilt from the local list: " + built.size()
+                                + " items, " + countFilms(built, resolved) + " films");
+                    }
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "could not check the filter component", t);
+                }
+                return result;
+            });
+            log(Log.INFO, TAG, "hooked w2.P.c (filter component)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook the filter component: " + t);
+        }
+    }
+
+    private int countFilms(List<?> built, Resolved resolved) throws Exception {
+        Set<Integer> names = new HashSet<>();
+        for (Film film : FILMS) {
+            names.add(resourceId(resolved.strings(), film.stringId(), "string"));
+        }
+        int count = 0;
+        Field title = null;
+        for (Object item : built) {
+            if (title == null) {
+                title = field(item.getClass(), "l");
+            }
+            if (names.contains(title.getInt(item))) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private void installOrderHook(Profile profile, ClassLoader loader, Resolved resolved) {
