@@ -292,14 +292,17 @@ public class ModuleMain extends XposedModule {
     }
 
     // The method that fills a component's item list: not static, returns nothing and takes one
-    // argument from the camera's data package. Named differently in each build.
+    // argument (the mode data). Named differently in each build.
     private static Method findBuilder(Class<?> cls) throws NoSuchMethodException {
         Method found = null;
         for (Method m : cls.getDeclaredMethods()) {
-            if (m.getReturnType() == void.class && m.getParameterCount() == 1
+            Class<?> param = m.getParameterCount() == 1 ? m.getParameterTypes()[0] : null;
+            // The argument is the mode data, but the build erases its type to Object
+            if (m.getReturnType() == void.class && param != null
                     && !java.lang.reflect.Modifier.isStatic(m.getModifiers())
                     && !m.isSynthetic()
-                    && m.getParameterTypes()[0].getName().startsWith("com.android.camera.data.data.")) {
+                    && (param == Object.class
+                    || param.getName().startsWith("com.android.camera.data.data."))) {
                 if (found != null) {
                     throw new NoSuchMethodException("more than one list builder in " + cls.getName());
                 }
@@ -477,6 +480,25 @@ public class ModuleMain extends XposedModule {
                     return chain.proceed();
                 }
                 return assetDrawable((Resources) chain.getThisObject(), id & 0xFFFF);
+            });
+            // AppCompat image views (the top bar) look the id up with getValue before they load
+            // the drawable, and fail on an id that is not in any resource table; give them a
+            // harmless value so they go on to load the drawable, which is answered above.
+            Method getValue = Resources.class.getDeclaredMethod("getValue", int.class,
+                    android.util.TypedValue.class, boolean.class);
+            hook(getValue).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) != ASSET_ICON_BASE) {
+                    return chain.proceed();
+                }
+                android.util.TypedValue value = (android.util.TypedValue) chain.getArg(1);
+                value.type = android.util.TypedValue.TYPE_INT_DEC;
+                value.data = 0;
+                value.string = null;
+                value.resourceId = id;
+                value.assetCookie = 0;
+                value.changingConfigurations = 0;
+                return null;
             });
             Method setImage = ImageView.class.getDeclaredMethod("setImageResource", int.class);
             hook(setImage).intercept(chain -> {
