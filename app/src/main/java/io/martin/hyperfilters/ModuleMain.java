@@ -73,7 +73,7 @@ public class ModuleMain extends XposedModule {
             String componentClass,
             // The camera's cloud filter data, which the reload method reads along with the
             // component; the module passes it so that reloading does not drop cloud filters.
-            String cloudClass, String cloudMethod) {
+            String cloudClass, String cloudMethod, String effectClass, String categoryMethod) {
     }
 
     private static final Profile[] PROFILES = {
@@ -84,7 +84,7 @@ public class ModuleMain extends XposedModule {
                     "com.android.camera.fragment.m0", "ut",
                     "E9.h", "c",
                     "com.android.camera.features.mode.capture.e", "L", "Y", "G",
-                    "h2.a", "a", "x", "s2.t", "Ei.q", "b"),
+                    "h2.a", "a", "x", "s2.t", "Ei.q", "b", "com.xiaomi.camera.effect.EffectController", "q"),
     };
 
     // ic_vector_lc_looks_filter_name_icon_standard in 6.7.000280.0 (no R classes at runtime).
@@ -115,6 +115,7 @@ public class ModuleMain extends XposedModule {
     // The Looks list draws a small image of each look's name under its thumbnail. There is no
     // such image for the film filters, so the name icon is a made-up resource id (this base plus
     // the filter ordinal) that ImageView.setImageResource turns into the film's name as text.
+    private static final int STANDARD_CATEGORY = 2;
     private static final int NAME_ICON_BASE = 0x7e000000;
     // Same coordinate system as the camera's own name icons (36 dp square), so the label is drawn
     // at the same size wherever the icon is used. Letter height and stroke are those of the
@@ -194,7 +195,8 @@ public class ModuleMain extends XposedModule {
             installPanelHook(profile, loader);
             installNameIconHook();
             installLooksHook(profile, loader, resolved);
-            installOrderHook(profile, loader);
+            installCategoryHook(profile, loader, resolved);
+            installOrderHook(profile, loader, resolved);
             return;
         }
         log(Log.WARN, TAG, stage + ": the camera's filter code is not one this module knows "
@@ -242,7 +244,29 @@ public class ModuleMain extends XposedModule {
     // order, then the user's own presets. After the strip has reloaded, the module puts it back
     // to that rule, and also once when the camera opens (which repairs a strip an earlier
     // version of the module left in a wrong order).
-    private void installOrderHook(Profile profile, ClassLoader loader) {
+    // The strip of the standard UI is built from the camera's filter list for category 2, which
+    // (unlike the list for category 10 above) never got the films. Add them to it as well, where
+    // the camera hands the list out (not where it builds it, one combined list is made from both).
+    private void installCategoryHook(Profile profile, ClassLoader loader, Resolved resolved) {
+        try {
+            Method categoryList = Class.forName(profile.effectClass(), false, loader)
+                    .getDeclaredMethod(profile.categoryMethod(), int.class);
+            hook(categoryList).intercept(chain -> {
+                Object result = chain.proceed();
+                Object category = chain.getArg(0);
+                if (category instanceof Integer c && c == STANDARD_CATEGORY) {
+                    addFilms(result, FILMS, resolved);
+                }
+                return result;
+            });
+            log(Log.INFO, TAG, "hooked " + profile.effectClass() + "." + profile.categoryMethod()
+                    + " (standard filter list)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook the standard filter list: " + t);
+        }
+    }
+
+    private void installOrderHook(Profile profile, ClassLoader loader, Resolved resolved) {
         try {
             Class<?> workspace = Class.forName(profile.workspaceClass(), false, loader);
             Method reload = null;
@@ -265,7 +289,7 @@ public class ModuleMain extends XposedModule {
                 Object result = chain.proceed();
                 try {
                     if (Boolean.TRUE.equals(result)) {
-                        restoreOrder(getList.invoke(chain.getThisObject()), profile, loader);
+                        restoreOrder(getList.invoke(chain.getThisObject()), profile, loader, resolved);
                     }
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "could not order the filter strip", t);
@@ -292,7 +316,7 @@ public class ModuleMain extends XposedModule {
                     } else {
                         log(Log.WARN, TAG, "no reload at start: app " + app + ", cloud " + cloud);
                     }
-                    restoreOrder(getList.invoke(chain.getThisObject()), profile, loader);
+                    restoreOrder(getList.invoke(chain.getThisObject()), profile, loader, resolved);
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "could not order the filter strip", t);
                 }
@@ -306,7 +330,8 @@ public class ModuleMain extends XposedModule {
     }
 
     @SuppressWarnings("unchecked")
-    private void restoreOrder(Object listObject, Profile profile, ClassLoader loader)
+    private void restoreOrder(Object listObject, Profile profile, ClassLoader loader,
+            Resolved resolved)
             throws ReflectiveOperationException {
         if (!(listObject instanceof List<?>) || ((List<?>) listObject).isEmpty()) {
             return;
@@ -327,17 +352,39 @@ public class ModuleMain extends XposedModule {
         }
         Field data = findField(list.get(0).getClass(), profile.itemDataField());
         Method sortIndex = findMethod(list.get(0).getClass(), profile.sortIndexMethod());
-        List<Object> sorted = new ArrayList<>(list);
-        sorted.sort((a, b) -> {
-            try {
-                Integer ra = rank.get(data.get(a));
-                Integer rb = rank.get(data.get(b));
-                return Integer.compare(ra == null ? Integer.MAX_VALUE : ra,
-                        rb == null ? Integer.MAX_VALUE : rb);
-            } catch (Throwable t) {
-                return 0;
+        // The films are the strip items whose name is one of the film names. The user's own order
+        // (Manage filters) is kept for everything else; the films go last, in the camera's order.
+        Set<Integer> filmNames = new HashSet<>();
+        for (Film[] group : new Film[][] {FILMS, LOOKS_FILMS}) {
+            for (Film film : group) {
+                try {
+                    filmNames.add(resourceId(resolved.strings(), film.stringId(), "string"));
+                } catch (Throwable ignored) {
+                }
             }
+        }
+        Field title = null;
+        List<Object> others = new ArrayList<>();
+        List<Object> films = new ArrayList<>();
+        for (Object item : list) {
+            Object filter = data.get(item);
+            boolean film = false;
+            if (filter != null) {
+                if (title == null) {
+                    title = field(filter.getClass(), "l");
+                }
+                film = filmNames.contains(title.getInt(filter));
+            }
+            (film ? films : others).add(item);
+        }
+        films.sort((a, b) -> {
+            Integer ra = rank.get(safeGet(data, a));
+            Integer rb = rank.get(safeGet(data, b));
+            return Integer.compare(ra == null ? Integer.MAX_VALUE : ra,
+                    rb == null ? Integer.MAX_VALUE : rb);
         });
+        List<Object> sorted = new ArrayList<>(others);
+        sorted.addAll(films);
         log(Log.INFO, TAG, "filter component: " + official.size() + " items");
         logStrip(list, data, sorted.equals(list));
         if (sorted.equals(list)) {
@@ -350,6 +397,14 @@ public class ModuleMain extends XposedModule {
         }
         log(Log.INFO, TAG, "put the filter strip back in the camera's order (" + list.size()
                 + " items)");
+    }
+
+    private static Object safeGet(Field field, Object item) {
+        try {
+            return field.get(item);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     // What the strip holds, for the log: its size and the names of its last items

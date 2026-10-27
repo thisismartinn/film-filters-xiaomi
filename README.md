@@ -43,14 +43,15 @@ To get support for a new camera build, open an issue with the camera version and
 1. **Add the items.** The camera builds its photo filter list in one method. The module hooks it and appends the four missing items, using the camera's own names and thumbnails. Resource ids come from the camera's resource classes, or are looked up by name when a build has no such class.
 2. **Skip the cloud merge.** The filter panel merges the local list with the cloud filter list and drops any local filter the cloud list does not name. The module makes the panel's merge check return `false`, so the panel uses the local list as it is.
 3. **Leica UI.** The Leica UI builds its own "Looks" list from a separate table. The module appends the five filters there too.
-4. **Order.** The camera's filter strip adds every filter it does not have yet at position 1, one after the other, so the films would come first and in reverse. Its own rule for the order is the order of the camera's filter list, where the films are last, so after the strip has reloaded (and once when the camera opens) the module puts the strip back to that rule. A strip saved before the films existed does not get them until the camera next reloads its cloud data, so when the camera opens the module also asks the strip to reload, which adds the filters the camera's list has and the strip lacks.
+4. **Order.** The camera's filter strip adds every filter it does not have yet at position 1, one after the other, so the films would come first and in reverse. After the strip has reloaded (and once when the camera opens) the module moves the films to the end, in the camera's order, and leaves everything else where it is, so an order you set in Manage filters is kept. A strip saved before the films existed does not get them until the camera next reloads its cloud data, so when the camera opens the module also asks the strip to reload, which adds the filters the camera's list has and the strip lacks. The standard UI's strip is built from a second filter list, which the module adds the films to as well.
 
 | Target (profile 6.7) | Purpose |
 | -------------------- | ------- |
 | `Ii.i0.d()` | Photo filter list (standard UI): appends R600, P100F, F-50 and KC64. |
 | `com.android.camera.fragment.m0.ut()` | Filter panel: returns `false` so the list is not merged with the cloud list. |
 | `E9.h.c()` | Leica "Looks" list: appends R600, P100F, F-50, KC64 and KP160. |
-| `com.android.camera.features.mode.capture.e` (the strip's reload and set-up methods) | Filter strip: puts it back in the camera's own order, films last. |
+| `com.android.camera.features.mode.capture.e` (the strip's reload and set-up methods) | Filter strip: moves the films to the end, keeps the rest. |
+| `com.xiaomi.camera.effect.EffectController.q` | Filter list of the standard UI: adds the films. |
 
 ## Use
 
