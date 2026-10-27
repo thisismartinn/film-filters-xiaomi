@@ -76,6 +76,7 @@ public class ModuleMain extends XposedModule {
     // made-up resource id (this base plus an index into M10R_ASSETS) that ImageView.setImageResource
     // and Resources.getDrawable turn into the file from the module's assets.
     private static final int ASSET_ICON_BASE = 0x7e010000;
+    private static final int ASSET_TEXT_BASE = 0x7e020000;   // the CMOS title string
     private static final String[] M10R_ASSETS = {"template", "icon", "text_icon"};
     private static final Map<Integer, Bitmap> ASSET_CACHE = new HashMap<>();
     private static volatile String moduleApk;
@@ -92,6 +93,7 @@ public class ModuleMain extends XposedModule {
     private volatile boolean legendHooked;
     private volatile boolean assetsHooked;
     private volatile boolean styleHooked;
+    private volatile boolean textHooked;
 
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
@@ -217,15 +219,8 @@ public class ModuleMain extends XposedModule {
                 Field template = field(item, "h");
                 Field icon = field(item, "i");
                 Field textIcon = field(item, "c");
-                Field[] blank = {field(item, "d"), field(item, "e"), field(item, "f"),
-                        field(item, "k")};
-                Field flag = field(item, "A");
                 Class<?> strings = Class.forName(profile.stringIds(), false, loader);
                 Class<?> images = Class.forName(profile.imageIds(), false, loader);
-                int titleId = strings.getField("legend_cmos").getInt(null);
-                int aliasId = strings.getField("legend_cmos_alias").getInt(null);
-                int introId = strings.getField("legendary_mode_upgrade_m10r_intro").getInt(null);
-                int imageId = images.getField("legendary_m10r").getInt(null);
 
                 hook(getItems).intercept(chain -> {
                     Object result = chain.proceed();
@@ -233,21 +228,35 @@ public class ModuleMain extends XposedModule {
                         if (result instanceof List<?> raw) {
                             @SuppressWarnings("unchecked")
                             List<Object> items = (List<Object>) raw;
+                            Object ccd = null;
                             for (Object entry : items) {
                                 if (M10R.equals(key.get(entry))) {
                                     return result;
                                 }
+                                if ("M9".equals(key.get(entry))) {
+                                    ccd = entry;
+                                }
                             }
+                            if (ccd == null) {
+                                return result;
+                            }
+                            // Start from the CCD (M9) item, so every field the camera's theme
+                            // fills in is there, then swap in the CMOS equivalents.
                             Object entry = allocate(item);
-                            for (Field f : blank) {
-                                f.setInt(entry, -1);
+                            for (Field f : item.getDeclaredFields()) {
+                                if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) {
+                                    f.setAccessible(true);
+                                    f.set(entry, f.get(ccd));
+                                }
                             }
-                            flag.setInt(entry, 0);
                             key.set(entry, M10R);
-                            title.setInt(entry, titleId);
-                            alias.setInt(entry, aliasId);
-                            intro.setInt(entry, introId);
-                            image.setInt(entry, imageId);
+                            // The CMOS title string is not in this build's resources: the
+                            // module supplies it (see installTextHook).
+                            title.setInt(entry, ASSET_TEXT_BASE);
+                            alias.setInt(entry, swap(strings, alias.getInt(ccd), "legend_ccd_alias",
+                                    "legend_cmos_alias"));
+                            intro.setInt(entry, swap(strings, intro.getInt(ccd), "m9", "m10r"));
+                            image.setInt(entry, swap(images, image.getInt(ccd), "m9", "m10r"));
                             template.setInt(entry, ASSET_ICON_BASE);
                             icon.setInt(entry, ASSET_ICON_BASE | 1);
                             textIcon.setInt(entry, ASSET_ICON_BASE | 2);
@@ -261,6 +270,7 @@ public class ModuleMain extends XposedModule {
                 });
                 legendHooked = true;
                 installAssetHooks();
+                installTextHook();
                 log(Log.INFO, TAG, "hooked " + profile.listClass() + ".getItems (Leica Essential, "
                         + "layout " + profile.name() + ")");
                 return;
@@ -276,8 +286,66 @@ public class ModuleMain extends XposedModule {
         }
     }
 
-    // The camera's item class has no constructor at all (the build inlined the empty one away), so
-    // an instance is made without calling one; the fields are all set by the caller.
+    // The id of the camera resource that matches the CCD one in the same id class (by the name the
+    // id class gives it): the name with "from" replaced by "to", or the id itself when there is no
+    // such resource.
+    private static int swap(Class<?> ids, int id, String from, String to) {
+        try {
+            for (Field f : ids.getFields()) {
+                if (f.getType() == int.class && f.getInt(null) == id) {
+                    String name = f.getName().contains(from) && !f.getName().equals(from)
+                            ? f.getName().replace(from, to)
+                            : f.getName().equals(from) ? to : f.getName();
+                    return ids.getField(name).getInt(null);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return id;
+    }
+
+    // Texts the camera build does not have: a made-up string id (this base) answered from the
+    // module's own strings, in the phone's language.
+    private void installTextHook() {
+        if (textHooked) {
+            return;
+        }
+        try {
+            Method getText = Resources.class.getDeclaredMethod("getText", int.class);
+            hook(getText).intercept(chain -> {
+                int id = (Integer) chain.getArg(0);
+                if ((id & 0xFFFF0000) != ASSET_TEXT_BASE) {
+                    return chain.proceed();
+                }
+                try {
+                    Application app = currentApplication();
+                    Resources own = app.getPackageManager().getResourcesForApplication(moduleInfo);
+                    return own.getText(R.string.m10r_title);
+                } catch (Throwable t) {
+                    return "CMOS";
+                }
+            });
+            textHooked = true;
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook Resources.getText: " + t);
+        }
+    }
+
+    // The camera's item class has no constructor in this build (the build inlined the empty one
+    // away), so an instance is made without calling one; the fields are all set by the caller.
+    private static Object allocate(Class<?> cls) throws ReflectiveOperationException {
+        Class<?> unsafe = Class.forName("sun.misc.Unsafe");
+        Field the = unsafe.getDeclaredField("theUnsafe");
+        the.setAccessible(true);
+        return unsafe.getMethod("allocateInstance", Class.class).invoke(the.get(null), cls);
+    }
+
+    private static Field field(Class<?> cls, String name) throws NoSuchFieldException {
+        Field field = cls.getDeclaredField(name);
+        field.setAccessible(true);
+        return field;
+    }
+
     private void installStyleHook(ClassLoader loader) {
         if (styleHooked) {
             return;
@@ -338,19 +406,6 @@ public class ModuleMain extends XposedModule {
         } catch (Throwable t) {
             return false;
         }
-    }
-
-    private static Object allocate(Class<?> cls) throws ReflectiveOperationException {
-        Class<?> unsafe = Class.forName("sun.misc.Unsafe");
-        Field the = unsafe.getDeclaredField("theUnsafe");
-        the.setAccessible(true);
-        return unsafe.getMethod("allocateInstance", Class.class).invoke(the.get(null), cls);
-    }
-
-    private static Field field(Class<?> cls, String name) throws NoSuchFieldException {
-        Field field = cls.getDeclaredField(name);
-        field.setAccessible(true);
-        return field;
     }
 
     // The item's images are made-up resource ids, answered here wherever the camera loads them:
