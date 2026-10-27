@@ -24,6 +24,7 @@ import android.widget.Toast;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -59,7 +60,13 @@ public class ModuleMain extends XposedModule {
             // which drops any local filter the cloud list does not name.
             String panelClass, String panelMethod,
             // Leica UI: builds the "Looks" list (back camera) from a fixed table.
-            String looksClass, String looksMethod) {
+            String looksClass, String looksMethod,
+            // The filter strip's workspace: after the cloud data arrives it adds every filter the
+            // strip does not have yet at position 1, one after the other. The strip's items keep
+            // their filter's data in one field (itemDataField), which holds the filter's key in
+            // another (dataKeyField); sortIndexMethod gives an item its place in the strip.
+            String workspaceClass, String itemDataField, String dataKeyField,
+            String sortIndexMethod) {
     }
 
     private static final Profile[] PROFILES = {
@@ -68,7 +75,8 @@ public class ModuleMain extends XposedModule {
                     "j3.b", "b", "l", "e", "d", "g", "h", "i",
                     "Di.p", "Di.n",
                     "com.android.camera.fragment.m0", "ut",
-                    "E9.h", "c"),
+                    "E9.h", "c",
+                    "com.android.camera.features.mode.capture.e", "L", "r", "Y"),
     };
 
     // ic_vector_lc_looks_filter_name_icon_standard in 6.7.000280.0 (no R classes at runtime).
@@ -178,6 +186,7 @@ public class ModuleMain extends XposedModule {
             installPanelHook(profile, loader);
             installNameIconHook();
             installLooksHook(profile, loader, resolved);
+            installOrderHook(profile, loader);
             return;
         }
         log(Log.WARN, TAG, stage + ": the camera's filter code is not one this module knows "
@@ -217,6 +226,127 @@ public class ModuleMain extends XposedModule {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    // The strip puts a filter it does not have yet at position 1, so the films, which the camera
+    // does not list itself, end up first and in reverse. After it has done that, the films are
+    // moved to the end of the strip, in their own order.
+    private void installOrderHook(Profile profile, ClassLoader loader) {
+        try {
+            Class<?> workspace = Class.forName(profile.workspaceClass(), false, loader);
+            Method reload = null;
+            for (Method m : workspace.getDeclaredMethods()) {
+                Class<?>[] types = m.getParameterTypes();
+                if (m.getReturnType() == boolean.class && types.length == 3
+                        && types[0] == int.class && types[1] == android.content.Context.class
+                        && types[2] == java.util.concurrent.ConcurrentHashMap.class) {
+                    reload = m;
+                }
+            }
+            if (reload == null) {
+                throw new NoSuchMethodException("no filter reload method in " + workspace);
+            }
+            Method getList = workspace.getMethod("getList");
+            Set<String> filmKeys = new HashSet<>();
+            for (Film film : LOOKS_FILMS) {
+                filmKeys.add(String.valueOf(film.ordinal()));
+            }
+            for (Film film : FILMS) {
+                filmKeys.add(String.valueOf(film.ordinal()));
+            }
+            hook(reload).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    if (Boolean.TRUE.equals(result)) {
+                        moveFilmsToEnd(getList.invoke(chain.getThisObject()), profile, filmKeys);
+                    }
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "could not move the films to the end", t);
+                }
+                return result;
+            });
+            log(Log.INFO, TAG, "hooked " + profile.workspaceClass() + "." + reload.getName()
+                    + " (films go to the end of the strip)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook the filter strip order: " + t);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void moveFilmsToEnd(Object listObject, Profile profile, Set<String> filmKeys)
+            throws ReflectiveOperationException {
+        if (!(listObject instanceof List<?>)) {
+            return;
+        }
+        List<Object> list = (List<Object>) listObject;
+        List<Object> films = new ArrayList<>();
+        Field data = null;
+        Field key = null;
+        Method sortIndex = null;
+        for (Object item : list) {
+            if (data == null) {
+                data = findField(item.getClass(), profile.itemDataField());
+                sortIndex = findMethod(item.getClass(), profile.sortIndexMethod());
+            }
+            Object filter = data.get(item);
+            if (filter == null) {
+                continue;
+            }
+            if (key == null) {
+                key = field(filter.getClass(), profile.dataKeyField());
+            }
+            if (filmKeys.contains(String.valueOf(key.get(filter)))) {
+                films.add(item);
+            }
+        }
+        if (films.isEmpty()) {
+            return;
+        }
+        final Field keyField = key;
+        final Field dataField = data;
+        films.sort((a, b) -> {
+            try {
+                return Integer.compare(
+                        Integer.parseInt(String.valueOf(keyField.get(dataField.get(a)))),
+                        Integer.parseInt(String.valueOf(keyField.get(dataField.get(b)))));
+            } catch (Throwable t) {
+                return 0;
+            }
+        });
+        List<Object> before = new ArrayList<>(list);
+        list.removeAll(films);
+        list.addAll(films);
+        if (list.equals(before)) {
+            return;
+        }
+        for (int i = 0; i < list.size(); i++) {
+            sortIndex.invoke(list.get(i), i);
+        }
+        log(Log.INFO, TAG, "moved " + films.size() + " films to the end of the filter strip");
+    }
+
+    // A field of a class or of one of its superclasses
+    private static Field findField(Class<?> cls, String name) throws NoSuchFieldException {
+        for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
+            try {
+                return field(c, name);
+            } catch (NoSuchFieldException ignored) {
+            }
+        }
+        throw new NoSuchFieldException(name);
+    }
+
+    // A one-int-argument method of a class or of one of its superclasses
+    private static Method findMethod(Class<?> cls, String name) throws NoSuchMethodException {
+        for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
+            try {
+                Method m = c.getDeclaredMethod(name, int.class);
+                m.setAccessible(true);
+                return m;
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
+        throw new NoSuchMethodException(name);
     }
 
     private void installPanelHook(Profile profile, ClassLoader loader) {
