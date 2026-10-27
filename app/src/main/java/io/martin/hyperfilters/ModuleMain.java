@@ -63,10 +63,14 @@ public class ModuleMain extends XposedModule {
             String looksClass, String looksMethod,
             // The filter strip's workspace: after the cloud data arrives it adds every filter the
             // strip does not have yet at position 1, one after the other. The strip's items keep
-            // their filter's data in one field (itemDataField), which holds the filter's key in
-            // another (dataKeyField); sortIndexMethod gives an item its place in the strip.
-            String workspaceClass, String itemDataField, String dataKeyField,
-            String sortIndexMethod) {
+            // their filter's data object in itemDataField (the same objects as in the camera's
+            // filter component, whose order is the order the camera lists its filters in);
+            // sortIndexMethod gives an item its place in the strip, and initMethod sets the
+            // workspace up when the camera opens. The component is found through the camera's data
+            // registry.
+            String workspaceClass, String itemDataField, String sortIndexMethod,
+            String initMethod, String registryClass, String registryMethod, String lookupMethod,
+            String componentClass) {
     }
 
     private static final Profile[] PROFILES = {
@@ -76,7 +80,8 @@ public class ModuleMain extends XposedModule {
                     "Di.p", "Di.n",
                     "com.android.camera.fragment.m0", "ut",
                     "E9.h", "c",
-                    "com.android.camera.features.mode.capture.e", "L", "r", "Y"),
+                    "com.android.camera.features.mode.capture.e", "L", "Y", "G",
+                    "h2.a", "a", "x", "s2.t"),
     };
 
     // ic_vector_lc_looks_filter_name_icon_standard in 6.7.000280.0 (no R classes at runtime).
@@ -229,8 +234,11 @@ public class ModuleMain extends XposedModule {
     }
 
     // The strip puts a filter it does not have yet at position 1, so the films, which the camera
-    // does not list itself, end up first and in reverse. After it has done that, the films are
-    // moved to the end of the strip, in their own order.
+    // does not list itself, would end up first and in reverse. Its own rule for the order is the
+    // order of the camera's filter component (the films are last in it): official filters in that
+    // order, then the user's own presets. After the strip has reloaded, the module puts it back
+    // to that rule, and also once when the camera opens (which repairs a strip an earlier
+    // version of the module left in a wrong order).
     private void installOrderHook(Profile profile, ClassLoader loader) {
         try {
             Class<?> workspace = Class.forName(profile.workspaceClass(), false, loader);
@@ -246,83 +254,78 @@ public class ModuleMain extends XposedModule {
             if (reload == null) {
                 throw new NoSuchMethodException("no filter reload method in " + workspace);
             }
+            Method init = workspace.getDeclaredMethod(profile.initMethod(), int.class);
             Method getList = workspace.getMethod("getList");
-            Set<String> filmKeys = new HashSet<>();
-            for (Film film : LOOKS_FILMS) {
-                filmKeys.add(String.valueOf(film.ordinal()));
-            }
-            for (Film film : FILMS) {
-                filmKeys.add(String.valueOf(film.ordinal()));
-            }
             hook(reload).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
                     if (Boolean.TRUE.equals(result)) {
-                        moveFilmsToEnd(getList.invoke(chain.getThisObject()), profile, filmKeys);
+                        restoreOrder(getList.invoke(chain.getThisObject()), profile, loader);
                     }
                 } catch (Throwable t) {
-                    log(Log.ERROR, TAG, "could not move the films to the end", t);
+                    log(Log.ERROR, TAG, "could not order the filter strip", t);
                 }
                 return result;
             });
-            log(Log.INFO, TAG, "hooked " + profile.workspaceClass() + "." + reload.getName()
-                    + " (films go to the end of the strip)");
+            hook(init).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    restoreOrder(getList.invoke(chain.getThisObject()), profile, loader);
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "could not order the filter strip", t);
+                }
+                return result;
+            });
+            log(Log.INFO, TAG, "hooked " + profile.workspaceClass() + "." + reload.getName() + ", "
+                    + init.getName() + " (filter strip order)");
         } catch (Throwable t) {
             log(Log.WARN, TAG, "cannot hook the filter strip order: " + t);
         }
     }
 
     @SuppressWarnings("unchecked")
-    private void moveFilmsToEnd(Object listObject, Profile profile, Set<String> filmKeys)
+    private void restoreOrder(Object listObject, Profile profile, ClassLoader loader)
             throws ReflectiveOperationException {
-        if (!(listObject instanceof List<?>)) {
+        if (!(listObject instanceof List<?>) || ((List<?>) listObject).isEmpty()) {
             return;
         }
         List<Object> list = (List<Object>) listObject;
-        List<Object> films = new ArrayList<>();
-        Field data = null;
-        Field key = null;
-        Method sortIndex = null;
-        for (Object item : list) {
-            if (data == null) {
-                data = findField(item.getClass(), profile.itemDataField());
-                sortIndex = findMethod(item.getClass(), profile.sortIndexMethod());
-            }
-            Object filter = data.get(item);
-            if (filter == null) {
-                continue;
-            }
-            if (key == null) {
-                key = field(filter.getClass(), profile.dataKeyField());
-            }
-            if (filmKeys.contains(String.valueOf(key.get(filter)))) {
-                films.add(item);
-            }
-        }
-        if (films.isEmpty()) {
+        // The camera's filter component and its items, in the camera's own order
+        Object registry = Class.forName(profile.registryClass(), false, loader)
+                .getMethod(profile.registryMethod()).invoke(null);
+        Object component = registry.getClass().getMethod(profile.lookupMethod(), Class.class)
+                .invoke(registry, Class.forName(profile.componentClass(), false, loader));
+        List<?> official = (List<?>) component.getClass().getMethod("getItems").invoke(component);
+        if (official == null || official.isEmpty()) {
             return;
         }
-        final Field keyField = key;
-        final Field dataField = data;
-        films.sort((a, b) -> {
+        Map<Object, Integer> rank = new java.util.IdentityHashMap<>();
+        for (int i = 0; i < official.size(); i++) {
+            rank.put(official.get(i), i);
+        }
+        Field data = findField(list.get(0).getClass(), profile.itemDataField());
+        Method sortIndex = findMethod(list.get(0).getClass(), profile.sortIndexMethod());
+        List<Object> sorted = new ArrayList<>(list);
+        sorted.sort((a, b) -> {
             try {
-                return Integer.compare(
-                        Integer.parseInt(String.valueOf(keyField.get(dataField.get(a)))),
-                        Integer.parseInt(String.valueOf(keyField.get(dataField.get(b)))));
+                Integer ra = rank.get(data.get(a));
+                Integer rb = rank.get(data.get(b));
+                return Integer.compare(ra == null ? Integer.MAX_VALUE : ra,
+                        rb == null ? Integer.MAX_VALUE : rb);
             } catch (Throwable t) {
                 return 0;
             }
         });
-        List<Object> before = new ArrayList<>(list);
-        list.removeAll(films);
-        list.addAll(films);
-        if (list.equals(before)) {
+        if (sorted.equals(list)) {
             return;
         }
+        list.clear();
+        list.addAll(sorted);
         for (int i = 0; i < list.size(); i++) {
             sortIndex.invoke(list.get(i), i);
         }
-        log(Log.INFO, TAG, "moved " + films.size() + " films to the end of the filter strip");
+        log(Log.INFO, TAG, "put the filter strip back in the camera's order (" + list.size()
+                + " items)");
     }
 
     // A field of a class or of one of its superclasses
@@ -732,11 +735,7 @@ public class ModuleMain extends XposedModule {
                 present.add(resolved.ordinal().getInt(entry));
             }
             List<String> added = new ArrayList<>();
-            // With the camera's newer filter panel (camera.feature.styleVersion 2 or more) the
-            // panel lists items it does not know in the opposite order to how they are added, so
-            // they are added the other way round to keep R600 first.
-            Film[] ordered = styleVersion() >= 2 ? reversed(films) : films;
-            for (Film film : ordered) {
+            for (Film film : films) {
                 if (present.contains(film.ordinal())) {
                     continue;
                 }
@@ -755,24 +754,6 @@ public class ModuleMain extends XposedModule {
             log(Log.ERROR, TAG, "could not add film filters", t);
         }
         return created;
-    }
-
-    private static int styleVersion() {
-        try {
-            return (Integer) Class.forName("android.os.SystemProperties")
-                    .getMethod("getInt", String.class, int.class)
-                    .invoke(null, "camera.feature.styleVersion", 0);
-        } catch (Throwable t) {
-            return 0;
-        }
-    }
-
-    private static Film[] reversed(Film[] films) {
-        Film[] out = new Film[films.length];
-        for (int i = 0; i < films.length; i++) {
-            out[i] = films[films.length - 1 - i];
-        }
-        return out;
     }
 
     // A resource id, from the camera's id class when it has one, otherwise looked up by name.
