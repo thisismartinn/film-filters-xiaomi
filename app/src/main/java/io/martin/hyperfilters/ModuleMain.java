@@ -116,6 +116,9 @@ public class ModuleMain extends XposedModule {
     // such image for the film filters, so the name icon is a made-up resource id (this base plus
     // the filter ordinal) that ImageView.setImageResource turns into the film's name as text.
     private static final int STANDARD_CATEGORY = 2;
+    // The camera identifies a filter in its strip by a key made from this field; the films were
+    // all left at 0 and so shared one key. Give each its own, clear of the camera's (8 bit) ids.
+    private static final int FILM_KEY_BASE = 0x10000;
     private static final int NAME_ICON_BASE = 0x7e000000;
     // Same coordinate system as the camera's own name icons (36 dp square), so the label is drawn
     // at the same size wherever the icon is used. Letter height and stroke are those of the
@@ -309,6 +312,21 @@ public class ModuleMain extends XposedModule {
         }
     }
 
+    // A component filter is a film when its key is one given above or, for a strip saved by an
+    // earlier version, when its name is a film's
+    private static boolean isFilm(Object filter, Field title, Set<Integer> names) throws Exception {
+        Object key = field(filter.getClass(), "r").get(filter);
+        if (key instanceof String k && k.matches("\\d+")) {
+            int value = Integer.parseInt(k);
+            for (Film film : FILMS) {
+                if (value == FILM_KEY_BASE + film.ordinal()) {
+                    return true;
+                }
+            }
+        }
+        return names.contains(title.getInt(filter));
+    }
+
     private int countFilms(List<?> built, Resolved resolved) throws Exception {
         Set<Integer> names = new HashSet<>();
         for (Film film : FILMS) {
@@ -320,7 +338,7 @@ public class ModuleMain extends XposedModule {
             if (title == null) {
                 title = field(item.getClass(), "l");
             }
-            if (names.contains(title.getInt(item))) {
+            if (isFilm(item, title, names)) {
                 count++;
             }
         }
@@ -395,7 +413,7 @@ public class ModuleMain extends XposedModule {
     @SuppressWarnings("unchecked")
     private void restoreOrder(Object listObject, Profile profile, ClassLoader loader,
             Resolved resolved)
-            throws ReflectiveOperationException {
+            throws Exception {
         if (!(listObject instanceof List<?>) || ((List<?>) listObject).isEmpty()) {
             return;
         }
@@ -436,7 +454,7 @@ public class ModuleMain extends XposedModule {
                 if (title == null) {
                     title = field(filter.getClass(), "l");
                 }
-                film = filmNames.contains(title.getInt(filter));
+                film = isFilm(filter, title, filmNames);
             }
             (film ? films : others).add(item);
         }
@@ -914,6 +932,9 @@ public class ModuleMain extends XposedModule {
                 Object entry = resolved.create().newInstance(PHOTO_CATEGORY, film.ordinal(), name,
                         image, 0, film.order(), "NORMAL");
                 resolved.cloud().setInt(entry, film.cloudId());
+                if (films == FILMS) {
+                    field(entry.getClass(), "n").setInt(entry, FILM_KEY_BASE + film.ordinal());
+                }
                 list.add(entry);
                 created.add(entry);
                 added.add(film.label());
