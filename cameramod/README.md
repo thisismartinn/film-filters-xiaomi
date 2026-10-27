@@ -7,7 +7,7 @@ An LSPosed/Vector module (libxposed API 101-102) that turns on three features th
 | Feature | What changes in the camera |
 | ------- | -------------------------- |
 | Palette and Parameters | The filter edit panel gets the Palette tab and the full Parameters list (tone, saturation, cold/warm, cyan/magenta, noise, soft light, texture, vignette), plus saving, sharing and importing filter presets. |
-| Original colour style | "Original" appears next to Leica Authentic and Leica Vibrant in the photography style picker. |
+| Original colour style | "Original" appears next to Leica Authentic and Leica Vibrant in the photography style picker. In the Leica UI it gets its own "ORIG" badge, because the camera would otherwise draw it as the Authentic badge. |
 | Leica Essential CMOS (M10R) | "CMOS" is added to the Leica Essential style list, between B&W (M3) and CCD (M9). |
 
 Original colour style and CMOS only change the photo if the phone's camera hardware layer implements them. The camera sends the chosen style to the hardware layer; the module only makes the choice available.
@@ -28,7 +28,8 @@ When the Leica Essential list is not one the module knows, it leaves the camera 
 
 1. **Palette and Parameters.** The camera reads `camera.feature.styleVersion` through `android.os.SystemProperties` and builds the full Parameters list when it is 2 or more. The module returns 2 for that key when the real value is lower. The same effect without the module is `setprop camera.feature.styleVersion 2` as root, which resets on reboot.
 2. **Original colour style.** The camera shows Original only when bit 3 of `xiaomi.capabilities.stylizationTypeMask` is set. The module sets the bit when the camera reads the characteristic.
-3. **CMOS.** The camera's Leica Essential list is built in `s2.A`. In this build the CMOS entry is compiled out, along with three of its images. The module appends the entry to the list returned by `getItems()` and answers the three image ids from its own assets.
+3. **CMOS.** The camera's Leica Essential list is built in `s2.A`. In this build the CMOS entry is compiled out, along with three of its images. The module appends the entry to the list returned by `getItems()` (the item class has no constructor in this build, so the instance is made without one) and answers the three image ids from its own assets.
+4. **Original badge.** The Leica UI picks a badge from a mapping that knows only two styles, so Original shares the Authentic badge. The module swaps the three image ids of the Original item for its own vector badge, only when they match the Authentic ones and are Leica UI drawables.
 
 ## Use
 

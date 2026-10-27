@@ -15,7 +15,6 @@ import android.util.Log;
 import android.widget.ImageView;
 import android.widget.Toast;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.HashMap;
@@ -58,6 +57,20 @@ public class ModuleMain extends XposedModule {
             // Camera 6.7 (HyperOS 4): 6.7.000280.0 (tested), 6.7.000070.0 (has the item already).
             new LegendProfile("6.7", "s2.A", "com.android.camera.data.data.d", "ci.e", "ci.b"),
     };
+    // The photography style picker (Leica Authentic, Leica Vibrant, and Original once its bit is
+    // set). The Leica UI draws each as a badge from a mapping that knows only two values, so
+    // Original comes out as the Authentic badge; the module swaps in its own "ORIG" badge.
+    private record StyleProfile(String name, String listClass, String itemClass) {
+    }
+
+    private static final StyleProfile[] STYLE_PROFILES = {
+            new StyleProfile("6.7", "s2.m", "com.android.camera.data.data.d"),
+    };
+    private static final String STYLE_ORIGINAL = "2";
+    private static final String STYLE_AUTHENTIC = "1";
+    private static final int ASSET_ORIGINAL_BADGE = 3;
+    private static volatile android.content.pm.ApplicationInfo moduleInfo;
+
     private static final String M10R = "M10R";
     // The item's three images are not in builds that drop the item, so the module carries them: a
     // made-up resource id (this base plus an index into M10R_ASSETS) that ImageView.setImageResource
@@ -78,6 +91,7 @@ public class ModuleMain extends XposedModule {
     private volatile boolean stylizationHooked;
     private volatile boolean legendHooked;
     private volatile boolean assetsHooked;
+    private volatile boolean styleHooked;
 
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
@@ -97,13 +111,15 @@ public class ModuleMain extends XposedModule {
             return;
         }
         try {
-            moduleApk = getModuleApplicationInfo().sourceDir;
+            moduleInfo = getModuleApplicationInfo();
+            moduleApk = moduleInfo.sourceDir;
         } catch (Throwable t) {
             log(Log.WARN, TAG, "cannot find the module APK: " + t);
         }
         installPropertyHook();
         installStylizationHook();
         installLegendHook(loader);
+        installStyleHook(loader);
         if (!problems.isEmpty() && stage.equals("onPackageLoaded")) {
             // onPackageReady tries once more; report only what is still wrong after it
             problems.clear();
@@ -192,8 +208,7 @@ public class ModuleMain extends XposedModule {
                 Class<?> list = Class.forName(profile.listClass(), false, loader);
                 Method getItems = list.getDeclaredMethod("getItems");
                 Class<?> item = Class.forName(profile.itemClass(), false, loader);
-                Constructor<?> create = item.getDeclaredConstructor();
-                create.setAccessible(true);
+                allocate(item);   // fail now, not in the hook, if instances cannot be made
                 Field key = field(item, "r");
                 Field title = field(item, "l");
                 Field alias = field(item, "m");
@@ -223,7 +238,7 @@ public class ModuleMain extends XposedModule {
                                     return result;
                                 }
                             }
-                            Object entry = create.newInstance();
+                            Object entry = allocate(item);
                             for (Field f : blank) {
                                 f.setInt(entry, -1);
                             }
@@ -259,6 +274,77 @@ public class ModuleMain extends XposedModule {
         if (!problems.contains(MSG_LEGEND)) {
             problems.add(MSG_LEGEND);
         }
+    }
+
+    // The camera's item class has no constructor at all (the build inlined the empty one away), so
+    // an instance is made without calling one; the fields are all set by the caller.
+    private void installStyleHook(ClassLoader loader) {
+        if (styleHooked) {
+            return;
+        }
+        for (StyleProfile profile : STYLE_PROFILES) {
+            try {
+                Class<?> list = Class.forName(profile.listClass(), false, loader);
+                Method getItems = list.getDeclaredMethod("getItems");
+                Class<?> item = Class.forName(profile.itemClass(), false, loader);
+                Field key = field(item, "r");
+                Field[] images = {field(item, "c"), field(item, "g"), field(item, "h")};
+
+                hook(getItems).intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        if (result instanceof List<?> items) {
+                            Object original = null;
+                            Object authentic = null;
+                            for (Object entry : items) {
+                                if (STYLE_ORIGINAL.equals(key.get(entry))) {
+                                    original = entry;
+                                } else if (STYLE_AUTHENTIC.equals(key.get(entry))) {
+                                    authentic = entry;
+                                }
+                            }
+                            // Only when Original really shares the Authentic Leica UI badge
+                            if (original != null && authentic != null
+                                    && images[0].getInt(original) == images[0].getInt(authentic)
+                                    && isLeicaBadge(images[0].getInt(original))) {
+                                for (Field f : images) {
+                                    f.setInt(original, ASSET_ICON_BASE | ASSET_ORIGINAL_BADGE);
+                                }
+                                log(Log.INFO, TAG, "gave the Original colour style its own Leica UI badge");
+                            }
+                        }
+                    } catch (Throwable t) {
+                        log(Log.ERROR, TAG, "could not fix the Original colour style badge", t);
+                    }
+                    return result;
+                });
+                styleHooked = true;
+                installAssetHooks();
+                log(Log.INFO, TAG, "hooked " + profile.listClass() + ".getItems (colour styles, "
+                        + "layout " + profile.name() + ")");
+                return;
+            } catch (Throwable t) {
+                log(Log.WARN, TAG, "colour style layout " + profile.name()
+                        + " does not match: " + t);
+            }
+        }
+    }
+
+    // The Leica UI's badges are the drawables whose names end in _lc_sp
+    private static boolean isLeicaBadge(int id) {
+        try {
+            Application app = currentApplication();
+            return app != null && app.getResources().getResourceEntryName(id).endsWith("_lc_sp");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static Object allocate(Class<?> cls) throws ReflectiveOperationException {
+        Class<?> unsafe = Class.forName("sun.misc.Unsafe");
+        Field the = unsafe.getDeclaredField("theUnsafe");
+        the.setAccessible(true);
+        return unsafe.getMethod("allocateInstance", Class.class).invoke(the.get(null), cls);
     }
 
     private static Field field(Class<?> cls, String name) throws NoSuchFieldException {
@@ -301,6 +387,16 @@ public class ModuleMain extends XposedModule {
 
     // One of the M10R images, read from the module's own APK.
     private static synchronized Drawable assetDrawable(Resources resources, int index) {
+        if (index == ASSET_ORIGINAL_BADGE) {
+            try {
+                Application app = currentApplication();
+                Resources own = app.getPackageManager().getResourcesForApplication(moduleInfo);
+                return own.getDrawable(R.drawable.ic_cvtype_original_lc_sp, null);
+            } catch (Throwable t) {
+                Log.w(TAG, "cannot load the Original badge: " + t);
+                return new ColorDrawable(Color.TRANSPARENT);
+            }
+        }
         Bitmap bitmap = ASSET_CACHE.get(index);
         if (bitmap == null) {
             try (ZipFile zip = new ZipFile(moduleApk)) {
