@@ -535,6 +535,9 @@ public class ModuleMain extends XposedModule {
                 try (var in = zip.getInputStream(entry)) {
                     bitmap = BitmapFactory.decodeStream(in);
                 }
+                // The images are the camera's xhdpi ones; saying so lets the drawable scale them
+                // to the screen the way the camera's own resources are scaled.
+                bitmap.setDensity(android.util.DisplayMetrics.DENSITY_XHIGH);
                 ASSET_CACHE.put(index, bitmap);
             } catch (Throwable t) {
                 Log.w(TAG, "cannot read the M10R image " + index + ": " + t);
