@@ -215,7 +215,9 @@ public class ModuleMain extends XposedModule {
     // Camera 6.4 (HyperOS 3): the filter lists are kept in EffectController, one list per
     // category, and handed out by n(int). The standard UI's list is category 2; it leaves out
     // the films that the camera's own code has the LUTs, names and images for.
+    // The panel of the standard UI on the 14 Ultra asks for category 10.
     private static final int LEGACY_CATEGORY = 2;
+    private static final int LEGACY_PANEL_CATEGORY = 10;
     private static final int[] LEGACY_ORDER = {9, 10, 11, 12};
 
     private boolean installLegacy(String stage, ClassLoader loader) {
@@ -240,12 +242,20 @@ public class ModuleMain extends XposedModule {
                 try {
                     Object asked = chain.getArg(0);
                     if (loggedCategories.add(String.valueOf(asked))) {
+                        StringBuilder ordinals = new StringBuilder();
+                        if (result instanceof List<?> l) {
+                            for (Object entry : l) {
+                                ordinals.append(category.getInt(entry)).append(':')
+                                        .append(ordinal.getInt(entry)).append(' ');
+                            }
+                        }
                         log(Log.INFO, TAG, "filter list asked for category " + asked + ": "
-                                + (result instanceof List<?> l ? l.size() : "none") + " items");
+                                + (result instanceof List<?> l ? l.size() : "none")
+                                + " items (category:ordinal) " + ordinals);
                     }
-                    if (asked instanceof Integer c && c == LEGACY_CATEGORY
-                            && result instanceof List<?> list) {
-                        addLegacyFilms(list, create, category, ordinal, strings);
+                    if (asked instanceof Integer c && (c == LEGACY_CATEGORY
+                            || c == LEGACY_PANEL_CATEGORY) && result instanceof List<?> list) {
+                        addLegacyFilms(list, c, create, category, ordinal, strings);
                     }
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "could not add film filters", t);
@@ -263,12 +273,12 @@ public class ModuleMain extends XposedModule {
     }
 
     @SuppressWarnings("unchecked")
-    private void addLegacyFilms(List<?> raw, Constructor<?> create, Field category, Field ordinal,
-            Class<?> strings) throws Exception {
+    private void addLegacyFilms(List<?> raw, int asked, Constructor<?> create, Field category,
+            Field ordinal, Class<?> strings) throws Exception {
         List<Object> list = (List<Object>) raw;
         Set<Integer> present = new HashSet<>();
         for (Object entry : list) {
-            if (category.getInt(entry) == LEGACY_CATEGORY) {
+            if (category.getInt(entry) == asked) {
                 present.add(ordinal.getInt(entry));
             }
         }
@@ -280,13 +290,12 @@ public class ModuleMain extends XposedModule {
             }
             int name = resourceId(strings, film.stringId(), "string");
             int image = resourceId(null, film.imageId(), "drawable");
-            list.add(create.newInstance("NORMAL", LEGACY_CATEGORY, film.ordinal(), name, image,
-                    LEGACY_ORDER[i], film.cloudId()));
+            list.add(create.newInstance("NORMAL", asked, film.ordinal(), name, image,
+                    asked == LEGACY_CATEGORY ? LEGACY_ORDER[i] : film.order(), film.cloudId()));
             added.add(film.label());
         }
-        if (!added.isEmpty()) {
-            log(Log.INFO, TAG, "filter list: " + present.size() + " items, added " + added);
-        }
+        log(Log.INFO, TAG, "filter list " + asked + ": " + present.size() + " items, added "
+                + added);
     }
 
     private static java.lang.reflect.Method listMethod(Profile profile, ClassLoader loader)
