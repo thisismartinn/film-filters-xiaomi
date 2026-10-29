@@ -230,11 +230,10 @@ public class ModuleMain extends XposedModule {
             Field category = field(item, "a");
             Field ordinal = field(item, "b");
             Class<?> strings = Class.forName("Z9.f", false, loader);
-            Class<?> images = Class.forName("com.android.camera.R$drawable", false, loader);
-            // everything the films need must be there before anything is hooked
+            // The camera has no class for its image ids (they are inlined), so the images are
+            // looked up by name when the lists are built.
             for (Film film : FILMS) {
                 strings.getField(film.stringId());
-                images.getField(film.imageId());
             }
             hook(lists).intercept(chain -> {
                 Object result = chain.proceed();
@@ -246,7 +245,7 @@ public class ModuleMain extends XposedModule {
                     }
                     if (asked instanceof Integer c && c == LEGACY_CATEGORY
                             && result instanceof List<?> list) {
-                        addLegacyFilms(list, create, category, ordinal, strings, images);
+                        addLegacyFilms(list, create, category, ordinal, strings);
                     }
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "could not add film filters", t);
@@ -265,7 +264,7 @@ public class ModuleMain extends XposedModule {
 
     @SuppressWarnings("unchecked")
     private void addLegacyFilms(List<?> raw, Constructor<?> create, Field category, Field ordinal,
-            Class<?> strings, Class<?> images) throws Exception {
+            Class<?> strings) throws Exception {
         List<Object> list = (List<Object>) raw;
         Set<Integer> present = new HashSet<>();
         for (Object entry : list) {
@@ -280,7 +279,7 @@ public class ModuleMain extends XposedModule {
                 continue;
             }
             int name = resourceId(strings, film.stringId(), "string");
-            int image = resourceId(images, film.imageId(), "drawable");
+            int image = resourceId(null, film.imageId(), "drawable");
             list.add(create.newInstance("NORMAL", LEGACY_CATEGORY, film.ordinal(), name, image,
                     LEGACY_ORDER[i], film.cloudId()));
             added.add(film.label());
