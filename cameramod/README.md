@@ -8,9 +8,11 @@ An LSPosed/Vector module (libxposed API 101-102) that turns on three features th
 | ------- | -------------------------- |
 | Palette and Parameters | The filter edit panel gets the Palette tab and the full Parameters list (tone, saturation, cold/warm, cyan/magenta, noise, soft light, texture, vignette), plus saving, sharing and importing filter presets. |
 | Original colour style | "Original" appears next to Leica Authentic and Leica Vibrant in the photography style picker. In the Leica UI it gets its own "ORIG" badge, because the camera would otherwise draw it as the Authentic badge. |
-| Leica Essential CMOS (M10R) | "CMOS" is added to the Leica Essential style list, between B&W (M3) and CCD (M9). |
+| Leica Essential CMOS (M10R), off by default | "CMOS" is added to the Leica Essential style list, between B&W (M3) and CCD (M9), once enabled (see Use). |
 
 Original colour style and CMOS only change the photo if the phone's camera hardware layer implements them. The camera sends the chosen style to the hardware layer; the module only makes the choice available.
+
+**CMOS is off by default.** The Xiaomi 17 Ultra's hardware layer (`camera.qcom.core.so`, `com.qti.chi.override.so`) has the Leica Essential processing for M3 and M9 only. A CMOS shot comes back as an ordinary picture, without the Leica processing and without the `legendmode` tag the Gallery uses for its LEICA button. Enable it only to experiment, or on a phone whose firmware supports it.
 
 ## Camera versions
 
@@ -20,7 +22,7 @@ The module does not check the camera's version number. Each feature looks for wh
 | ------- | --------------- | ------------------ |
 | Palette and Parameters | The system property `camera.feature.styleVersion`, which the camera reads to decide whether to build the full Parameters list. | None. |
 | Original colour style | The camera characteristic `xiaomi.capabilities.stylizationTypeMask`, bit 3. | None. |
-| CMOS (M10R) | The Leica Essential list class, by a layout ("profile") that names it. | Tested: camera 6.7.000280.0 (HyperOS 4.0.5.0). 6.7.000070.0 already has the entry. |
+| CMOS (M10R) | Only when `camera.feature.m10r` is 1. The Leica Essential list class, by a layout ("profile") that names it. | Tested: camera 6.7.000280.0 (HyperOS 4.0.5.0). 6.7.000070.0 already has the entry. |
 
 When the Leica Essential list is not one the module knows, it leaves the camera unchanged and shows a toast in Camera, once per camera version.
 
@@ -35,6 +37,14 @@ When the Leica Essential list is not one the module knows, it leaves the camera 
 
 1. Install the module and enable it in LSPosed or Vector. Set its scope to **Camera** only.
 2. Force-stop Camera and open it again.
+
+To add the CMOS entry to the Leica Essential list, run as root and force-stop Camera:
+
+```bash
+su -c "setprop camera.feature.m10r 1"
+```
+
+It resets on reboot (set it to 0 or reboot to turn it off). To keep it, run the command from a boot script such as Magisk's `service.sh`.
 
 If the camera misbehaves, disable the module and force-stop Camera to restore the stock behaviour.
 

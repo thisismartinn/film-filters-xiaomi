@@ -33,7 +33,9 @@ import io.github.libxposed.api.XposedModule;
 //  2. the "Original" colour style next to Leica Authentic and Leica Vibrant (bit 3 of the camera
 //     characteristic xiaomi.capabilities.stylizationTypeMask, which this phone's camera hardware
 //     layer does not set),
-//  3. the Leica Essential CMOS (M10R) style, whose list entry is compiled out of this build.
+//  3. the Leica Essential CMOS (M10R) style, whose list entry is compiled out of this build. Off
+//     unless the system property camera.feature.m10r is 1: the hardware layer of the 17 Ultra
+//     has no M10R processing, so the style only gives a plain picture.
 // Each part is independent; one that does not fit the camera build is skipped and logged.
 public class ModuleMain extends XposedModule {
     private static final String TAG = "HyperCameraMod";
@@ -73,6 +75,7 @@ public class ModuleMain extends XposedModule {
     private static volatile android.content.pm.ApplicationInfo moduleInfo;
 
     private static final String M10R = "M10R";
+    private static final String M10R_ENABLE_KEY = "camera.feature.m10r";
     // The item's three images are not in builds that drop the item, so the module carries them: a
     // made-up resource id (this base plus an index into M10R_ASSETS) that ImageView.setImageResource
     // and Resources.getDrawable turn into the file from the module's assets.
@@ -202,6 +205,17 @@ public class ModuleMain extends XposedModule {
 
     // ---- 3. Leica Essential CMOS (M10R) ---------------------------------------------------------
 
+    // Read on every build of the list, so setprop takes effect the next time Camera starts.
+    private boolean m10rEnabled() {
+        try {
+            Class<?> props = Class.forName("android.os.SystemProperties");
+            return "1".equals(props.getMethod("get", String.class, String.class)
+                    .invoke(null, M10R_ENABLE_KEY, "0"));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private void installLegendHook(ClassLoader loader) {
         if (legendHooked) {
             return;
@@ -229,6 +243,9 @@ public class ModuleMain extends XposedModule {
 
                 hook(build).intercept(chain -> {
                     Object result = chain.proceed();
+                    if (!m10rEnabled()) {
+                        return result;
+                    }
                     try {
                         if (getItems.invoke(chain.getThisObject()) instanceof List<?> raw) {
                             @SuppressWarnings("unchecked")
