@@ -265,11 +265,80 @@ public class ModuleMain extends XposedModule {
             hooked = true;
             log(Log.INFO, TAG, stage + ": camera layout 6.4, hooked " + effect.getName() + "."
                     + lists.getName());
+            installLegacyComponentHook(loader);
             return true;
         } catch (Throwable t) {
             log(Log.WARN, TAG, stage + ": camera layout 6.4 does not match: " + t);
             return false;
         }
+    }
+
+    // As in 6.7, the camera builds its filter component from the list above, or, when it holds
+    // cloud filter data for the mode, from that data merged with the list, which leaves the films
+    // out. When the films are missing after that, build it again from the list alone.
+    private void installLegacyComponentHook(ClassLoader loader) {
+        try {
+            Class<?> cls = Class.forName("f0.M", false, loader);
+            Method build = cls.getDeclaredMethod("mapToCloudItems", int.class, Map.class);
+            Method init = cls.getDeclaredMethod("initItems", int.class);
+            Method items = cls.getMethod("getItems");
+            Class<?> data = Class.forName("com.android.camera.data.data.d", false, loader);
+            Field key = field(data, "p");
+            hook(init).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    List<?> built = (List<?>) items.invoke(chain.getThisObject());
+                    log(Log.INFO, TAG, "filter component set up for mode " + chain.getArg(0) + ": "
+                            + built.size() + " items, " + countLegacyFilms(built, key) + " films");
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "could not check the filter component", t);
+                }
+                return result;
+            });
+            hook(build).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object mode = chain.getArg(0);
+                    Map<?, ?> cloud = (Map<?, ?>) chain.getArg(1);
+                    List<?> built = (List<?>) items.invoke(chain.getThisObject());
+                    boolean hasCloud = cloud != null && cloud.containsKey(mode);
+                    int films = countLegacyFilms(built, key);
+                    log(Log.INFO, TAG, "filter component for mode " + mode + ": " + built.size()
+                            + " items, " + films + " films, cloud data " + hasCloud);
+                    if (films == 0 && hasCloud) {
+                        Map<Object, Object> local = new java.util.concurrent.ConcurrentHashMap<>(cloud);
+                        local.remove(mode);
+                        build.invoke(chain.getThisObject(), mode, local);
+                        built = (List<?>) items.invoke(chain.getThisObject());
+                        log(Log.INFO, TAG, "rebuilt from the list: " + built.size() + " items, "
+                                + countLegacyFilms(built, key) + " films");
+                    }
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "could not check the filter component", t);
+                }
+                return result;
+            });
+            log(Log.INFO, TAG, "hooked f0.M (filter component)");
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "cannot hook the filter component: " + t);
+        }
+    }
+
+    // A component filter's key is its category in the high 16 bits and its ordinal in the low 16
+    private static int countLegacyFilms(List<?> built, Field key) throws Exception {
+        int count = 0;
+        for (Object item : built) {
+            Object k = key.get(item);
+            if (k instanceof String text && text.matches("\\d+")) {
+                int ordinal = (int) (Long.parseLong(text) & 0xFFFF);
+                for (Film film : FILMS) {
+                    if (film.ordinal() == ordinal) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
     }
 
     @SuppressWarnings("unchecked")

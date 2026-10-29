@@ -11,8 +11,8 @@ android {
         applicationId = "io.martin.hyperfilters"
         minSdk = 26
         targetSdk = 37
-        versionCode = 45
-        versionName = "1.8.4"
+        versionCode = 46
+        versionName = "1.8.5"
     }
 
     buildTypes {
