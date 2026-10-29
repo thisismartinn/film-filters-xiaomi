@@ -215,7 +215,7 @@ public class ModuleMain extends XposedModule {
     // Camera 6.4 (HyperOS 3): the filter lists are kept in EffectController, one list per
     // category, and handed out by n(int). The standard UI's list is category 2; it leaves out
     // the films that the camera's own code has the LUTs, names and images for.
-    // The panel of the standard UI on the 14 Ultra asks for category 10.
+    // The panel of the standard UI asks for category 10 (on the 14 Ultra).
     private static final int LEGACY_CATEGORY = 2;
     private static final int LEGACY_PANEL_CATEGORY = 10;
     private static final int[] LEGACY_ORDER = {9, 10, 11, 12};
@@ -242,16 +242,8 @@ public class ModuleMain extends XposedModule {
                 try {
                     Object asked = chain.getArg(0);
                     if (loggedCategories.add(String.valueOf(asked))) {
-                        StringBuilder ordinals = new StringBuilder();
-                        if (result instanceof List<?> l) {
-                            for (Object entry : l) {
-                                ordinals.append(category.getInt(entry)).append(':')
-                                        .append(ordinal.getInt(entry)).append(' ');
-                            }
-                        }
                         log(Log.INFO, TAG, "filter list asked for category " + asked + ": "
-                                + (result instanceof List<?> l ? l.size() : "none")
-                                + " items (category:ordinal) " + ordinals);
+                                + (result instanceof List<?> l ? l.size() : "none") + " items");
                     }
                     if (asked instanceof Integer c && (c == LEGACY_CATEGORY
                             || c == LEGACY_PANEL_CATEGORY) && result instanceof List<?> list) {
