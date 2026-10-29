@@ -204,9 +204,90 @@ public class ModuleMain extends XposedModule {
             installOrderHook(profile, loader, resolved);
             return;
         }
+        if (installLegacy(stage, loader)) {
+            return;
+        }
         log(Log.WARN, TAG, stage + ": the camera's filter code is not one this module knows "
                 + "(a different camera version?); the camera is left unchanged");
         problems.add(MSG_UNSUPPORTED);
+    }
+
+    // Camera 6.4 (HyperOS 3): the filter lists are kept in EffectController, one list per
+    // category, and handed out by n(int). The standard UI's list is category 2; it leaves out
+    // the films that the camera's own code has the LUTs, names and images for.
+    private static final int LEGACY_CATEGORY = 2;
+    private static final int[] LEGACY_ORDER = {9, 10, 11, 12};
+
+    private boolean installLegacy(String stage, ClassLoader loader) {
+        try {
+            Class<?> effect = Class.forName("com.android.camera.effect.EffectController", false,
+                    loader);
+            Method lists = effect.getDeclaredMethod("n", int.class);
+            Class<?> item = Class.forName("P0.d", false, loader);
+            Constructor<?> create = item.getDeclaredConstructor(String.class, int.class, int.class,
+                    int.class, int.class, int.class, int.class);
+            create.setAccessible(true);
+            Field category = field(item, "a");
+            Field ordinal = field(item, "b");
+            Class<?> strings = Class.forName("Z9.f", false, loader);
+            Class<?> images = Class.forName("com.android.camera.R$drawable", false, loader);
+            // everything the films need must be there before anything is hooked
+            for (Film film : FILMS) {
+                strings.getField(film.stringId());
+                images.getField(film.imageId());
+            }
+            hook(lists).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object asked = chain.getArg(0);
+                    if (loggedCategories.add(String.valueOf(asked))) {
+                        log(Log.INFO, TAG, "filter list asked for category " + asked + ": "
+                                + (result instanceof List<?> l ? l.size() : "none") + " items");
+                    }
+                    if (asked instanceof Integer c && c == LEGACY_CATEGORY
+                            && result instanceof List<?> list) {
+                        addLegacyFilms(list, create, category, ordinal, strings, images);
+                    }
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "could not add film filters", t);
+                }
+                return result;
+            });
+            hooked = true;
+            log(Log.INFO, TAG, stage + ": camera layout 6.4, hooked " + effect.getName() + "."
+                    + lists.getName());
+            return true;
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, stage + ": camera layout 6.4 does not match: " + t);
+            return false;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void addLegacyFilms(List<?> raw, Constructor<?> create, Field category, Field ordinal,
+            Class<?> strings, Class<?> images) throws Exception {
+        List<Object> list = (List<Object>) raw;
+        Set<Integer> present = new HashSet<>();
+        for (Object entry : list) {
+            if (category.getInt(entry) == LEGACY_CATEGORY) {
+                present.add(ordinal.getInt(entry));
+            }
+        }
+        List<String> added = new ArrayList<>();
+        for (int i = 0; i < FILMS.length; i++) {
+            Film film = FILMS[i];
+            if (present.contains(film.ordinal())) {
+                continue;
+            }
+            int name = resourceId(strings, film.stringId(), "string");
+            int image = resourceId(images, film.imageId(), "drawable");
+            list.add(create.newInstance("NORMAL", LEGACY_CATEGORY, film.ordinal(), name, image,
+                    LEGACY_ORDER[i], film.cloudId()));
+            added.add(film.label());
+        }
+        if (!added.isEmpty()) {
+            log(Log.INFO, TAG, "filter list: " + present.size() + " items, added " + added);
+        }
     }
 
     private static java.lang.reflect.Method listMethod(Profile profile, ClassLoader loader)
